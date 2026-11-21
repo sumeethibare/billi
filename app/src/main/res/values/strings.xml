@@ -1,0 +1,34 @@
+<resources>
+    <string name="app_name">Billi</string>
+    <string name="tagline">Group Trip Expense &amp; Receipt Ledger</string>
+    <string name="sign_in_google">Sign in with Google</string>
+    <string name="sign_out">Sign out</string>
+    <string name="account_and_settings">Account &amp; Settings</string>
+    <string name="create_trip">New Trip</string>
+    <string name="scan_qr">Scan QR</string>
+    <string name="add_bill">Add Bill</string>
+    <string name="edit_bill">Edit Expense</string>
+    <string name="smart_scan_receipt">Smart Scan Receipt</string>
+    <string name="end_trip_archive">End Trip &amp; Export PDF</string>
+    <string name="export_pdf">Export Archival PDF</string>
+    <string name="creator_lock_creator">Creator • Admin</string>
+    <string name="creator_lock_cohost">Co-Host • Can Edit</string>
+    <string name="creator_lock_viewer">View-Only • Locked</string>
+    <string name="trip_archived_badge">Archived • Read-Only</string>
+    <string name="status_online">Online</string>
+    <string name="status_syncing">Syncing…</string>
+    <string name="status_offline">Offline</string>
+    <string name="status_offline_queued">Offline • %1$d queued</string>
+    <string name="toast_saved_offline">Saved offline — queued for background sync</string>
+    <string name="toast_back_online_synced">Back online — trip ledger synced</string>
+    <string name="summary_title">Your Balance Summary</string>
+    <string name="summary_owed_to_you">You are owed</string>
+    <string name="summary_you_owe">You owe</string>
+    <string name="summary_settled">All settled up</string>
+    <string name="tab_bills">Bills</string>
+    <string name="tab_insights">Insights</string>
+    <string name="tab_settlements">Settle</string>
+    <string name="tab_members">Members</string>
+    <string name="widget_description">Shows your live INR Billi trip balance with one-tap Quick Add.</string>
+    <string name="developer_credit">Crafted by isuh • com.isuh.billi</string>
+</resources>

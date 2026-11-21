@@ -1,0 +1,389 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HARDENED HELPERS ---
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getTrip(tripId) {
+      return get(/databases/$(database)/documents/trips/$(tripId)).data;
+    }
+
+    function tripExists(tripId) {
+      return exists(/databases/$(database)/documents/trips/$(tripId));
+    }
+
+    function isTripMember(tripId) {
+      return isSignedIn() &&
+        tripExists(tripId) &&
+        request.auth.uid in getTrip(tripId).memberUids;
+    }
+
+    function isTripEditorActive(tripId) {
+      return isSignedIn() &&
+        tripExists(tripId) &&
+        getTrip(tripId).status == 'active' &&
+        (
+          getTrip(tripId).creatorUid == request.auth.uid ||
+          ('coHostUids' in getTrip(tripId) && request.auth.uid in getTrip(tripId).coHostUids)
+        );
+    }
+
+    // --- ENTITY VALIDATION BLUEPRINTS ---
+
+    function isValidTrip(data) {
+      return data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 80 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+        data.currencyCode is string && data.currencyCode.size() == 3 && data.currencyCode.matches('^[A-Z]{3}$') &&
+        (!('budgetCents' in data) || (data.budgetCents is int && data.budgetCents >= 0 && data.budgetCents <= 1000000000)) &&
+        data.status in ['active', 'ended'] &&
+        data.joinCode is string && data.joinCode.size() >= 6 && data.joinCode.size() <= 20 && data.joinCode.matches('^[A-Z0-9]+$') &&
+        (!('lastJoinCodeAttempt' in data) || (data.lastJoinCodeAttempt is string && data.lastJoinCodeAttempt.size() >= 6 && data.lastJoinCodeAttempt.size() <= 20)) &&
+        data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 50 &&
+        data.creatorUid in data.memberUids &&
+        data.memberUids[0] is string &&
+        (!('coHostUids' in data) || (
+          data.coHostUids is list &&
+          data.coHostUids.size() <= 20 &&
+          (data.coHostUids.size() == 0 || data.coHostUids[0] is string)
+        )) &&
+        data.members is list && data.members.size() >= 1 && data.members.size() <= 50 &&
+        data.members[0] is map &&
+        data.createdAt is timestamp && data.createdAt <= request.time &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time &&
+        (!('endedAt' in data) || (data.endedAt is timestamp && data.endedAt <= request.time));
+    }
+
+    function isValidBill(data, tripId) {
+      return data.tripId is string && data.tripId == tripId &&
+        data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.category in ['food', 'stay', 'transport', 'activity', 'shopping', 'other'] &&
+        data.amountCents is int && data.amountCents > 0 && data.amountCents <= 1000000000 &&
+        data.locationName is string && data.locationName.size() <= 160 &&
+        data.paidByMemberId is string && isValidId(data.paidByMemberId) &&
+        (!('payers' in data) || (
+          data.payers is list &&
+          data.payers.size() <= 20 &&
+          (data.payers.size() == 0 || data.payers[0] is map)
+        )) &&
+        data.splitMode in ['equal', 'custom', 'percentage'] &&
+        data.participantIds is list && data.participantIds.size() >= 1 && data.participantIds.size() <= 50 &&
+        data.participantIds[0] is string &&
+        data.splits is map && data.splits.size() >= 1 && data.splits.size() <= 50 &&
+        (!('splitPercentages' in data) || (data.splitPercentages is map && data.splitPercentages.size() <= 50)) &&
+        data.receiptAttached is bool &&
+        data.billDateMillis is int && data.billDateMillis > 0 &&
+        (!('deleted' in data) || data.deleted is bool) &&
+        (!('deletedAtMillis' in data) || (data.deletedAtMillis is int && data.deletedAtMillis >= 0)) &&
+        (!('deletedByUid' in data) || (data.deletedByUid is string && data.deletedByUid.size() <= 128)) &&
+        data.createdAt is timestamp && data.createdAt <= request.time &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidReceipt(data, tripId, billId) {
+      return data.tripId is string && data.tripId == tripId &&
+        data.billId is string && data.billId == billId &&
+        data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.imageBase64 is string && data.imageBase64.size() >= 1 && data.imageBase64.size() <= 600000 &&
+        data.createdAt is timestamp && data.createdAt <= request.time &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSettlement(data, tripId) {
+      return data.tripId is string && data.tripId == tripId &&
+        data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
+        data.fromMemberId is string && isValidId(data.fromMemberId) &&
+        data.toMemberId is string && isValidId(data.toMemberId) &&
+        data.fromMemberId != data.toMemberId &&
+        data.amountCents is int && data.amountCents > 0 && data.amountCents <= 1000000000 &&
+        data.note is string && data.note.size() <= 160 &&
+        data.settledAtMillis is int && data.settledAtMillis > 0 &&
+        data.createdAt is timestamp && data.createdAt <= request.time &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidSyncedUser(data, tripId, userId) {
+      return data.userId is string && data.userId == userId &&
+        data.tripId is string && data.tripId == tripId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500)) &&
+        (!('linkedMemberId' in data) || (data.linkedMemberId is string && data.linkedMemberId.size() <= 128)) &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.userId is string && data.userId == userId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500)) &&
+        data.defaultCurrencyCode is string && data.defaultCurrencyCode.size() == 3 && data.defaultCurrencyCode.matches('^[A-Z]{3}$') &&
+        data.createdAt is timestamp && data.createdAt <= request.time &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidTripLink(data, tripId) {
+      return data.tripId is string && data.tripId == tripId &&
+        data.linkedMemberId is string && isValidId(data.linkedMemberId) &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // --- COLLECTION RULES ---
+
+    match /trips/{tripId} {
+      // Only members (creator + co-hosts + QR-joined viewers) can read a trip
+      allow get: if isSignedIn() && isValidId(tripId) && request.auth.uid in existing().memberUids;
+      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+
+      // Only the authenticated creator can create a new active trip
+      allow create: if isSignedIn() &&
+        isValidId(tripId) &&
+        isValidTrip(incoming()) &&
+        incoming().creatorUid == request.auth.uid &&
+        incoming().status == 'active' &&
+        incoming().memberUids.size() == 1 &&
+        incoming().memberUids[0] == request.auth.uid &&
+        incoming().keys().hasAll([
+          'creatorUid', 'creatorName', 'title', 'currencyCode',
+          'status', 'joinCode', 'memberUids', 'members', 'createdAt', 'updatedAt'
+        ]) &&
+        incoming().keys().hasOnly([
+          'creatorUid', 'creatorName', 'title', 'currencyCode', 'budgetCents',
+          'status', 'joinCode', 'memberUids', 'coHostUids', 'members', 'createdAt', 'updatedAt'
+        ]);
+
+      // Terminal State Lock: once status == 'ended', NO further updates are permitted.
+      allow update: if isSignedIn() &&
+        isValidId(tripId) &&
+        isValidTrip(incoming()) &&
+        existing().status == 'active' &&
+        incoming().joinCode == existing().joinCode &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          // Action 1 (Creator Only): Edit trip metadata, budget, co-hosts, or participant roster while active
+          (
+            existing().creatorUid == request.auth.uid &&
+            incoming().creatorUid == existing().creatorUid &&
+            incoming().status == 'active' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'currencyCode', 'budgetCents', 'coHostUids', 'members', 'updatedAt'
+            ])
+          ) ||
+          // Action 2 (Creator Only): End and archive the trip (terminal transition)
+          (
+            existing().creatorUid == request.auth.uid &&
+            incoming().creatorUid == existing().creatorUid &&
+            incoming().status == 'ended' &&
+            'endedAt' in incoming() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'endedAt', 'updatedAt'])
+          ) ||
+          // Action 3 (QR Code Viewer Join): Signed-in user with valid joinCode appends ONLY their own UID to memberUids
+          (
+            incoming().creatorUid == existing().creatorUid &&
+            incoming().status == 'active' &&
+            'lastJoinCodeAttempt' in incoming() &&
+            incoming().lastJoinCodeAttempt == existing().joinCode &&
+            incoming().memberUids.hasAll(existing().memberUids) &&
+            incoming().memberUids.size() <= existing().memberUids.size() + 1 &&
+            request.auth.uid in incoming().memberUids &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'lastJoinCodeAttempt', 'updatedAt'])
+          ) ||
+          // Action 4 (Creator Only): Transfer trip ownership to an existing signed-in trip member
+          (
+            existing().creatorUid == request.auth.uid &&
+            incoming().status == 'active' &&
+            incoming().creatorUid in existing().memberUids &&
+            incoming().creatorUid != existing().creatorUid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'creatorUid', 'creatorName', 'coHostUids', 'members', 'updatedAt'
+            ])
+          )
+        );
+
+      // Creator-only deletion of trips
+      allow delete: if isSignedIn() && isValidId(tripId) && existing().creatorUid == request.auth.uid;
+
+      // --- SUBCOLLECTION: BILLS (Creator & Co-Host Edit Lock) ---
+      match /bills/{billId} {
+        allow get: if isSignedIn() && isValidId(tripId) && isValidId(billId) && isTripMember(tripId);
+        allow list: if isSignedIn() && isTripMember(tripId);
+
+        allow create: if isSignedIn() &&
+          isValidId(tripId) &&
+          isValidId(billId) &&
+          isValidBill(incoming(), tripId) &&
+          incoming().creatorUid == request.auth.uid &&
+          incoming().keys().hasAll([
+            'tripId', 'creatorUid', 'title', 'category', 'amountCents',
+            'locationName', 'paidByMemberId', 'splitMode', 'participantIds',
+            'splits', 'receiptAttached', 'billDateMillis', 'createdAt', 'updatedAt'
+          ]) &&
+          incoming().keys().hasOnly([
+            'tripId', 'creatorUid', 'title', 'category', 'amountCents',
+            'locationName', 'paidByMemberId', 'payers', 'splitMode', 'participantIds',
+            'splits', 'splitPercentages', 'receiptAttached', 'billDateMillis',
+            'deleted', 'deletedAtMillis', 'deletedByUid', 'createdAt', 'updatedAt'
+          ]) &&
+          isTripEditorActive(tripId);
+
+        allow update: if isSignedIn() &&
+          isValidId(tripId) &&
+          isValidId(billId) &&
+          isValidBill(incoming(), tripId) &&
+          incoming().creatorUid == existing().creatorUid &&
+          incoming().tripId == existing().tripId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'category', 'amountCents', 'locationName',
+            'paidByMemberId', 'payers', 'splitMode', 'participantIds', 'splits',
+            'splitPercentages', 'receiptAttached', 'billDateMillis',
+            'deleted', 'deletedAtMillis', 'deletedByUid', 'updatedAt'
+          ]) &&
+          isTripEditorActive(tripId);
+
+        allow delete: if isSignedIn() &&
+          isValidId(tripId) &&
+          isValidId(billId) &&
+          isTripEditorActive(tripId);
+      }
+
+      // --- SUBCOLLECTION: RECEIPTS (Creator & Co-Host Edit Lock) ---
+      match /receipts/{billId} {
+        allow get: if isSignedIn() && isValidId(tripId) && isValidId(billId) && isTripMember(tripId);
+        allow list: if isSignedIn() && isTripMember(tripId);
+
+        allow create: if isSignedIn() &&
+          isValidId(tripId) &&
+          isValidId(billId) &&
+          isValidReceipt(incoming(), tripId, billId) &&
+          incoming().creatorUid == request.auth.uid &&
+          incoming().keys().hasAll(['tripId', 'billId', 'creatorUid', 'imageBase64', 'createdAt', 'updatedAt']) &&
+          incoming().keys().hasOnly(['tripId', 'billId', 'creatorUid', 'imageBase64', 'createdAt', 'updatedAt']) &&
+          isTripEditorActive(tripId);
+
+        allow update: if isSignedIn() &&
+          isValidId(tripId) &&
+          isValidId(billId) &&
+          isValidReceipt(incoming(), tripId, billId) &&
+          incoming().creatorUid == existing().creatorUid &&
+          incoming().tripId == existing().tripId &&
+          incoming().billId == existing().billId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['imageBase64', 'updatedAt']) &&
+          isTripEditorActive(tripId);
+
+        allow delete: if isSignedIn() &&
+          isValidId(tripId) &&
+          isValidId(billId) &&
+          isTripEditorActive(tripId);
+      }
+
+      // --- SUBCOLLECTION: SETTLEMENTS (Creator & Co-Host Edit Lock) ---
+      match /settlements/{settlementId} {
+        allow get: if isSignedIn() && isValidId(tripId) && isValidId(settlementId) && isTripMember(tripId);
+        allow list: if isSignedIn() && isTripMember(tripId);
+
+        allow create: if isSignedIn() &&
+          isValidId(tripId) &&
+          isValidId(settlementId) &&
+          isValidSettlement(incoming(), tripId) &&
+          incoming().creatorUid == request.auth.uid &&
+          incoming().keys().hasAll([
+            'tripId', 'creatorUid', 'fromMemberId', 'toMemberId',
+            'amountCents', 'note', 'settledAtMillis', 'createdAt', 'updatedAt'
+          ]) &&
+          incoming().keys().hasOnly([
+            'tripId', 'creatorUid', 'fromMemberId', 'toMemberId',
+            'amountCents', 'note', 'settledAtMillis', 'createdAt', 'updatedAt'
+          ]) &&
+          isTripEditorActive(tripId);
+
+        allow delete: if isSignedIn() &&
+          isValidId(tripId) &&
+          isValidId(settlementId) &&
+          isTripEditorActive(tripId);
+      }
+
+      // --- SUBCOLLECTION: SYNCED USERS (Member Directory for Co-Host & Ownership Transfer) ---
+      match /syncedUsers/{userId} {
+        allow get: if isSignedIn() && isValidId(tripId) && isValidId(userId) && isTripMember(tripId);
+        allow list: if isSignedIn() && isTripMember(tripId);
+
+        allow create, update: if isOwner(userId) &&
+          isValidId(tripId) &&
+          isValidId(userId) &&
+          isTripMember(tripId) &&
+          isValidSyncedUser(incoming(), tripId, userId) &&
+          incoming().keys().hasAll(['userId', 'tripId', 'displayName', 'updatedAt']) &&
+          incoming().keys().hasOnly(['userId', 'tripId', 'displayName', 'photoUrl', 'linkedMemberId', 'updatedAt']);
+
+        allow delete: if isOwner(userId) && isValidId(tripId) && isValidId(userId);
+      }
+    }
+
+    // --- USERS & USER-SCOPED TRIP MEMBER LINKS ---
+    match /users/{userId} {
+      // Strictly owner-isolated; list is intentionally disallowed to prevent user enumeration
+      allow get: if isOwner(userId) && isValidId(userId);
+
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().keys().hasAll(['userId', 'displayName', 'defaultCurrencyCode', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['userId', 'displayName', 'photoUrl', 'defaultCurrencyCode', 'createdAt', 'updatedAt']);
+
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'defaultCurrencyCode', 'updatedAt']);
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      match /tripLinks/{tripId} {
+        allow get: if isOwner(userId) && isValidId(tripId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+          isValidId(tripId) &&
+          isValidTripLink(incoming(), tripId) &&
+          incoming().keys().hasAll(['tripId', 'linkedMemberId', 'updatedAt']) &&
+          incoming().keys().hasOnly(['tripId', 'linkedMemberId', 'updatedAt']);
+
+        allow update: if isOwner(userId) &&
+          isValidId(tripId) &&
+          isValidTripLink(incoming(), tripId) &&
+          incoming().tripId == existing().tripId &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['linkedMemberId', 'updatedAt']);
+
+        allow delete: if isOwner(userId) && isValidId(tripId);
+      }
+    }
+  }
+}

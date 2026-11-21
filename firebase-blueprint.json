@@ -1,0 +1,296 @@
+{
+  "entities": {
+    "Trip": {
+      "title": "Trip",
+      "description": "A group trip expense ledger owned by a creator with optional co-host editors, INR budget tracking, and read-only synced members.",
+      "type": "object",
+      "properties": {
+        "creatorUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the primary trip creator."
+        },
+        "creatorName": {
+          "type": "string",
+          "description": "Display name of the primary trip creator."
+        },
+        "title": {
+          "type": "string",
+          "description": "Trip name shown across the ledger and archival PDF."
+        },
+        "currencyCode": {
+          "type": "string",
+          "description": "3-letter ISO currency code for the trip (defaults to INR)."
+        },
+        "budgetCents": {
+          "type": "integer",
+          "description": "Optional trip budget in minor units (paise for INR). 0 means no budget set."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "ended"],
+          "description": "Lifecycle state; once ended, the trip, bills, and settlements become immutable."
+        },
+        "joinCode": {
+          "type": "string",
+          "description": "Secret invite token embedded in the trip QR code."
+        },
+        "lastJoinCodeAttempt": {
+          "type": "string",
+          "description": "Last verified join code submitted when a viewer joined via QR."
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Bounded list of authenticated UIDs allowed to read the trip ledger."
+        },
+        "coHostUids": {
+          "type": "array",
+          "description": "Bounded list of signed-in member UIDs granted co-host edit permissions on bills and settlements."
+        },
+        "members": {
+          "type": "array",
+          "description": "Bounded list of trip participant records ({memberId, displayName, linkedUid})."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on every update."
+        },
+        "endedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Optional server timestamp set when the creator ends and archives the trip."
+        }
+      },
+      "required": [
+        "creatorUid",
+        "creatorName",
+        "title",
+        "currencyCode",
+        "status",
+        "joinCode",
+        "memberUids",
+        "members",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Bill": {
+      "title": "Bill",
+      "description": "An itemized trip expense with location details, payer, subset participants, and equal/percentage/exact splits.",
+      "type": "object",
+      "properties": {
+        "tripId": {
+          "type": "string",
+          "description": "Parent trip document ID."
+        },
+        "creatorUid": {
+          "type": "string",
+          "description": "UID of the creator or co-host who authored the bill."
+        },
+        "title": {
+          "type": "string",
+          "description": "Short expense title."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["food", "stay", "transport", "activity", "shopping", "other"],
+          "description": "Expense category."
+        },
+        "amountCents": {
+          "type": "integer",
+          "description": "Total bill amount in integer minor units (paise)."
+        },
+        "locationName": {
+          "type": "string",
+          "description": "Location ('where') description for the expense."
+        },
+        "paidByMemberId": {
+          "type": "string",
+          "description": "Primary member ID of the person who paid the bill."
+        },
+        "payers": {
+          "type": "array",
+          "description": "Optional list of multi-payer split payment entries ({memberId, amountCents, paymentMethod}) for Cash + UPI / Card / Points."
+        },
+        "splitMode": {
+          "type": "string",
+          "enum": ["equal", "custom", "percentage"],
+          "description": "Whether the bill is split equally, by custom exact amounts, or by custom percentages."
+        },
+        "participantIds": {
+          "type": "array",
+          "description": "Subset of trip member IDs participating in this bill split."
+        },
+        "splits": {
+          "type": "object",
+          "description": "Map of memberId to exact owed amount in integer minor units."
+        },
+        "splitPercentages": {
+          "type": "object",
+          "description": "Optional map of memberId to basis points (0..10000 where 5000 = 50.00%) when splitMode is percentage."
+        },
+        "receiptAttached": {
+          "type": "boolean",
+          "description": "Whether a receipt photo exists in the receipts subcollection."
+        },
+        "billDateMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds of the expense date/time."
+        },
+        "deleted": {
+          "type": "boolean",
+          "description": "Soft-delete flag placing the bill in the Creator/Co-Host recovery Trash Bin until restored or permanently purged."
+        },
+        "deletedAtMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds when the bill was soft-deleted (0 when active)."
+        },
+        "deletedByUid": {
+          "type": "string",
+          "description": "UID of the creator or co-host who soft-deleted the bill."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "tripId",
+        "creatorUid",
+        "title",
+        "category",
+        "amountCents",
+        "locationName",
+        "paidByMemberId",
+        "splitMode",
+        "participantIds",
+        "splits",
+        "receiptAttached",
+        "billDateMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BillReceipt": {
+      "title": "BillReceipt",
+      "description": "Compressed JPEG receipt image synced separately from lightweight bill records.",
+      "type": "object",
+      "properties": {
+        "tripId": { "type": "string" },
+        "billId": { "type": "string" },
+        "creatorUid": { "type": "string" },
+        "imageBase64": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tripId", "billId", "creatorUid", "imageBase64", "createdAt", "updatedAt"]
+    },
+    "SettlementRecord": {
+      "title": "SettlementRecord",
+      "description": "A recorded payment between two trip members that deducts from simplified balances.",
+      "type": "object",
+      "properties": {
+        "tripId": { "type": "string" },
+        "creatorUid": { "type": "string" },
+        "fromMemberId": { "type": "string" },
+        "toMemberId": { "type": "string" },
+        "amountCents": { "type": "integer" },
+        "note": { "type": "string" },
+        "settledAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "tripId",
+        "creatorUid",
+        "fromMemberId",
+        "toMemberId",
+        "amountCents",
+        "note",
+        "settledAtMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SyncedTripUser": {
+      "title": "SyncedTripUser",
+      "description": "Signed-in participant directory entry for a trip so the creator can manage co-hosts and transfer ownership.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "tripId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "linkedMemberId": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "tripId", "displayName", "updatedAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Authenticated Billi user profile isolated strictly to the owning account.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "defaultCurrencyCode": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "defaultCurrencyCode", "createdAt", "updatedAt"]
+    },
+    "UserTripLink": {
+      "title": "UserTripLink",
+      "description": "Maps a signed-in user to their chosen participant memberId within a trip for personal balance summaries.",
+      "type": "object",
+      "properties": {
+        "tripId": { "type": "string" },
+        "linkedMemberId": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tripId", "linkedMemberId", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Owner-isolated Billi user profiles."
+    },
+    "/trips/{tripId}": {
+      "schema": { "$ref": "#/entities/Trip" },
+      "description": "Group trip ledgers with creator lock, optional co-hosts, ownership transfer, and QR join access."
+    },
+    "/trips/{tripId}/bills/{billId}": {
+      "schema": { "$ref": "#/entities/Bill" },
+      "description": "Itemized bills for a trip; creator and co-host writes while active, member read-only."
+    },
+    "/trips/{tripId}/receipts/{billId}": {
+      "schema": { "$ref": "#/entities/BillReceipt" },
+      "description": "Compressed receipt images linked 1:1 with trip bills."
+    },
+    "/trips/{tripId}/settlements/{settlementId}": {
+      "schema": { "$ref": "#/entities/SettlementRecord" },
+      "description": "Recorded settlement payments between trip members."
+    },
+    "/trips/{tripId}/syncedUsers/{userId}": {
+      "schema": { "$ref": "#/entities/SyncedTripUser" },
+      "description": "Signed-in users synced to this trip for co-host management and ownership transfer."
+    },
+    "/users/{userId}/tripLinks/{tripId}": {
+      "schema": { "$ref": "#/entities/UserTripLink" },
+      "description": "Per-user mapping from signed-in account to participant ID in a trip."
+    }
+  }
+}
