@@ -87,6 +87,7 @@ service cloud.firestore {
         data.category in ['food', 'stay', 'transport', 'activity', 'shopping', 'other'] &&
         data.amountCents is int && data.amountCents > 0 && data.amountCents <= 1000000000 &&
         data.locationName is string && data.locationName.size() <= 160 &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
         data.paidByMemberId is string && isValidId(data.paidByMemberId) &&
         (!('payers' in data) || (
           data.payers is list &&
@@ -113,6 +114,24 @@ service cloud.firestore {
         data.creatorUid is string && data.creatorUid.size() >= 1 && data.creatorUid.size() <= 128 &&
         data.imageBase64 is string && data.imageBase64.size() >= 1 && data.imageBase64.size() <= 600000 &&
         data.createdAt is timestamp && data.createdAt <= request.time &&
+        data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidBillComment(data, tripId, billId) {
+      return data.tripId is string && data.tripId == tripId &&
+        data.billId is string && data.billId == billId &&
+        data.userId is string && data.userId == request.auth.uid &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 280 &&
+        data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    function isValidBillReaction(data, tripId, billId, userId) {
+      return data.tripId is string && data.tripId == tripId &&
+        data.billId is string && data.billId == billId &&
+        data.userId is string && data.userId == userId &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+        data.emoji in ['verified', 'check', 'thanks', 'receipt'] &&
         data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
@@ -245,7 +264,7 @@ service cloud.firestore {
           ]) &&
           incoming().keys().hasOnly([
             'tripId', 'creatorUid', 'title', 'category', 'amountCents',
-            'locationName', 'paidByMemberId', 'payers', 'splitMode', 'participantIds',
+            'locationName', 'notes', 'paidByMemberId', 'payers', 'splitMode', 'participantIds',
             'splits', 'splitPercentages', 'receiptAttached', 'billDateMillis',
             'deleted', 'deletedAtMillis', 'deletedByUid', 'createdAt', 'updatedAt'
           ]) &&
@@ -259,7 +278,7 @@ service cloud.firestore {
           incoming().tripId == existing().tripId &&
           incoming().createdAt == existing().createdAt &&
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'title', 'category', 'amountCents', 'locationName',
+            'title', 'category', 'amountCents', 'locationName', 'notes',
             'paidByMemberId', 'payers', 'splitMode', 'participantIds', 'splits',
             'splitPercentages', 'receiptAttached', 'billDateMillis',
             'deleted', 'deletedAtMillis', 'deletedByUid', 'updatedAt'
@@ -270,6 +289,48 @@ service cloud.firestore {
           isValidId(tripId) &&
           isValidId(billId) &&
           isTripEditorActive(tripId);
+
+        // --- NESTED SUBCOLLECTION: BILL COMMENTS (Any Trip Member, Creator-Lock Safe) ---
+        match /comments/{commentId} {
+          allow get: if isSignedIn() && isValidId(tripId) && isValidId(billId) && isValidId(commentId) && isTripMember(tripId);
+          allow list: if isSignedIn() && isValidId(tripId) && isValidId(billId) && isTripMember(tripId);
+
+          allow create: if isSignedIn() &&
+            isValidId(tripId) &&
+            isValidId(billId) &&
+            isValidId(commentId) &&
+            isTripMember(tripId) &&
+            isValidBillComment(incoming(), tripId, billId) &&
+            incoming().keys().hasAll(['tripId', 'billId', 'userId', 'authorName', 'text', 'createdAt']) &&
+            incoming().keys().hasOnly(['tripId', 'billId', 'userId', 'authorName', 'text', 'createdAt']);
+
+          allow delete: if isSignedIn() &&
+            isValidId(tripId) &&
+            isValidId(billId) &&
+            isValidId(commentId) &&
+            isTripMember(tripId) &&
+            (existing().userId == request.auth.uid || isTripEditorActive(tripId));
+        }
+
+        // --- NESTED SUBCOLLECTION: BILL REACTIONS (Per-User Verification Chips, Creator-Lock Safe) ---
+        match /reactions/{userId} {
+          allow get: if isSignedIn() && isValidId(tripId) && isValidId(billId) && isValidId(userId) && isTripMember(tripId);
+          allow list: if isSignedIn() && isValidId(tripId) && isValidId(billId) && isTripMember(tripId);
+
+          allow create, update: if isOwner(userId) &&
+            isValidId(tripId) &&
+            isValidId(billId) &&
+            isValidId(userId) &&
+            isTripMember(tripId) &&
+            isValidBillReaction(incoming(), tripId, billId, userId) &&
+            incoming().keys().hasAll(['tripId', 'billId', 'userId', 'authorName', 'emoji', 'updatedAt']) &&
+            incoming().keys().hasOnly(['tripId', 'billId', 'userId', 'authorName', 'emoji', 'updatedAt']);
+
+          allow delete: if isOwner(userId) &&
+            isValidId(tripId) &&
+            isValidId(billId) &&
+            isTripMember(tripId);
+        }
       }
 
       // --- SUBCOLLECTION: RECEIPTS (Creator & Co-Host Edit Lock) ---

@@ -1,12 +1,15 @@
 package com.example
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -63,7 +66,12 @@ import kotlinx.coroutines.launch
 
 private const val ROUTE_DASHBOARD = "dashboard"
 private const val ROUTE_ACCOUNT = "account"
-private const val ROUTE_TRIP_DETAIL = "trip/{tripId}"
+private const val ROUTE_TRIP_DETAIL = "trip/{tripId}?title={title}"
+
+private fun buildTripDetailRoute(tripId: String, title: String = ""): String {
+    val encodedTitle = Uri.encode(title)
+    return "trip/$tripId?title=$encodedTitle"
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -204,13 +212,13 @@ private fun BilliAuthenticatedNav(
             !quickAddTripId.isNullOrBlank() -> {
                 onConsumeIntent()
                 tripQuickAddDraft = quickAddTripId to null
-                navController.navigate("trip/$quickAddTripId") {
+                navController.navigate(buildTripDetailRoute(quickAddTripId)) {
                     launchSingleTop = true
                 }
             }
             !openTripId.isNullOrBlank() -> {
                 onConsumeIntent()
-                navController.navigate("trip/$openTripId") {
+                navController.navigate(buildTripDetailRoute(openTripId)) {
                     launchSingleTop = true
                 }
             }
@@ -228,50 +236,56 @@ private fun BilliAuthenticatedNav(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        NavHost(
-            navController = navController,
-            startDestination = ROUTE_DASHBOARD,
-            enterTransition = { BilliMotion.screenEnterForward },
-            exitTransition = { BilliMotion.screenExitForward },
-            popEnterTransition = { BilliMotion.screenPopEnter },
-            popExitTransition = { BilliMotion.screenPopExit }
-        ) {
-            composable(ROUTE_DASHBOARD) {
-                val dashboardViewModel: DashboardViewModel = viewModel(
-                    key = "dashboard_$currentUserId",
-                    factory = viewModelFactory {
-                        initializer {
-                            val app = checkNotNull(this[APPLICATION_KEY])
-                            DashboardViewModel(
-                                repository = BilliRepository(app),
-                                syncMonitor = syncMonitor,
-                                currentUserId = currentUserId,
-                                currentUserName = currentUserName,
-                                currentUserPhotoUrl = currentUserPhotoUrl
-                            )
+    Surface(
+        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            NavHost(
+                navController = navController,
+                startDestination = ROUTE_DASHBOARD,
+                enterTransition = { BilliMotion.screenEnterForward(prefs.reduceMotion) },
+                exitTransition = { BilliMotion.screenExitForward(prefs.reduceMotion) },
+                popEnterTransition = { BilliMotion.screenPopEnter(prefs.reduceMotion) },
+                popExitTransition = { BilliMotion.screenPopExit(prefs.reduceMotion) }
+            ) {
+                composable(ROUTE_DASHBOARD) {
+                    val dashboardViewModel: DashboardViewModel = viewModel(
+                        key = "dashboard_$currentUserId",
+                        factory = viewModelFactory {
+                            initializer {
+                                val app = checkNotNull(this[APPLICATION_KEY])
+                                DashboardViewModel(
+                                    repository = BilliRepository(app),
+                                    syncMonitor = syncMonitor,
+                                    currentUserId = currentUserId,
+                                    currentUserName = currentUserName,
+                                    currentUserPhotoUrl = currentUserPhotoUrl
+                                )
+                            }
                         }
-                    }
-                )
+                    )
 
-                DashboardScreen(
-                    viewModel = dashboardViewModel,
-                    revealProgress = dashboardRevealProgress,
-                    showOnboardingWalkthrough = !prefs.hasSeenOnboardingWalkthrough,
-                    onCompleteWalkthrough = {
-                        scope.launch { preferencesRepository.setHasSeenOnboardingWalkthrough(true) }
-                    },
-                    pendingSharedDraft = pendingSharedDraft,
-                    onDismissSharedDraft = { pendingSharedDraft = null },
-                    onOpenTripWithSharedDraft = { tripId, draft ->
-                        pendingSharedDraft = null
-                        tripQuickAddDraft = tripId to draft
-                        navController.navigate("trip/$tripId")
-                    },
-                    onOpenTrip = { tripId -> navController.navigate("trip/$tripId") },
-                    onOpenAccount = { navController.navigate(ROUTE_ACCOUNT) }
-                )
-            }
+                    DashboardScreen(
+                        viewModel = dashboardViewModel,
+                        revealProgress = dashboardRevealProgress,
+                        showOnboardingWalkthrough = !prefs.hasSeenOnboardingWalkthrough,
+                        onCompleteWalkthrough = {
+                            scope.launch { preferencesRepository.setHasSeenOnboardingWalkthrough(true) }
+                        },
+                        pendingSharedDraft = pendingSharedDraft,
+                        onDismissSharedDraft = { pendingSharedDraft = null },
+                        onOpenTripWithSharedDraft = { tripId, tripTitle, draft ->
+                            pendingSharedDraft = null
+                            tripQuickAddDraft = tripId to draft
+                            navController.navigate(buildTripDetailRoute(tripId, tripTitle))
+                        },
+                        onOpenTrip = { tripId, tripTitle ->
+                            navController.navigate(buildTripDetailRoute(tripId, tripTitle))
+                        },
+                        onOpenAccount = { navController.navigate(ROUTE_ACCOUNT) }
+                    )
+                }
 
             composable(ROUTE_ACCOUNT) {
                 val accountViewModel: AccountViewModel = viewModel(
@@ -301,9 +315,19 @@ private fun BilliAuthenticatedNav(
 
             composable(
                 route = ROUTE_TRIP_DETAIL,
-                arguments = listOf(navArgument("tripId") { type = NavType.StringType })
+                arguments = listOf(
+                    navArgument("tripId") { type = NavType.StringType },
+                    navArgument("title") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    }
+                )
             ) { backStackEntry ->
                 val tripId = backStackEntry.arguments?.getString("tripId").orEmpty()
+                val rawTitle = backStackEntry.arguments?.getString("title").orEmpty()
+                val initialTripTitle = remember(rawTitle) {
+                    runCatching { Uri.decode(rawTitle) }.getOrDefault(rawTitle)
+                }
                 val detailViewModel: TripDetailViewModel = viewModel(
                     key = "trip_${currentUserId}_$tripId",
                     factory = viewModelFactory {
@@ -339,6 +363,7 @@ private fun BilliAuthenticatedNav(
                 TripDetailScreen(
                     viewModel = detailViewModel,
                     expenseViewModel = expenseViewModel,
+                    initialTripTitle = initialTripTitle,
                     lastUsedSplitMode = SplitMode.fromWire(prefs.lastUsedSplitMode),
                     autoOpenAddBill = quickLaunchForThisTrip != null,
                     initialSharedDraft = quickLaunchForThisTrip?.second,
@@ -360,6 +385,7 @@ private fun BilliAuthenticatedNav(
                 }
             )
         }
+    }
     }
 
     // Silent Startup GitHub Release Update Bottom Sheet

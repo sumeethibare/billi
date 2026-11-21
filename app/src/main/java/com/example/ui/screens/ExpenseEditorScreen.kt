@@ -108,6 +108,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.Bill
 import com.example.data.model.BillCategory
 import com.example.data.model.CURRENCY_SYMBOL_INR
+import com.example.data.model.MultiDayTemplate
 import com.example.data.model.PaymentMethod
 import com.example.data.model.SplitMode
 import com.example.data.model.Trip
@@ -739,6 +740,150 @@ fun ExpenseEditorScreen(
                     }
                 }
 
+                // --- MULTI-DAY / PER-UNIT RECURRING TEMPLATES (STAY / SCOOTER / CAR RENT) ---
+                if (!state.isEditing) {
+                    BilliMorphCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("multi_day_template_card"),
+                        animateSize = true
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Multi-Day / Rental Split",
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Text(
+                                        text = "Homestay nights, scooter rent, or daily car rate × days",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = state.multiDayEnabled,
+                                    onCheckedChange = {
+                                        feedback?.tick()
+                                        viewModel.toggleMultiDay(it)
+                                    },
+                                    modifier = Modifier.testTag("multi_day_toggle")
+                                )
+                            }
+
+                            AnimatedVisibility(
+                                visible = state.multiDayEnabled,
+                                enter = fadeIn() + expandVertically(),
+                                exit = fadeOut() + shrinkVertically()
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        MultiDayTemplate.presets.forEach { preset ->
+                                            AssistChip(
+                                                onClick = {
+                                                    feedback?.tick()
+                                                    viewModel.applyMultiDayTemplate(preset)
+                                                },
+                                                label = { Text(preset.label) },
+                                                modifier = Modifier.testTag("multiday_preset_${preset.id}")
+                                            )
+                                        }
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        OutlinedTextField(
+                                            value = state.multiDayRateInput,
+                                            onValueChange = { viewModel.updateMultiDayRate(it) },
+                                            label = { Text("Rate / ${state.multiDayUnitLabel.removeSuffix("s")}") },
+                                            prefix = { Text(CURRENCY_SYMBOL_INR, style = MoneyBodyStyle) },
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                            singleLine = true,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("multiday_rate_input")
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            modifier = Modifier.height(56.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 4.dp)
+                                            ) {
+                                                IconButton(
+                                                    onClick = {
+                                                        feedback?.tick()
+                                                        viewModel.updateMultiDayCount(state.multiDayCount - 1)
+                                                    },
+                                                    enabled = state.multiDayCount > 1
+                                                ) {
+                                                    Text("−", style = MaterialTheme.typography.titleLarge)
+                                                }
+                                                Text(
+                                                    text = "${state.multiDayCount} ${state.multiDayUnitLabel}",
+                                                    style = MaterialTheme.typography.labelLarge
+                                                )
+                                                IconButton(
+                                                    onClick = {
+                                                        feedback?.tick()
+                                                        viewModel.updateMultiDayCount(state.multiDayCount + 1)
+                                                    },
+                                                    enabled = state.multiDayCount < 30
+                                                ) {
+                                                    Text("+", style = MaterialTheme.typography.titleLarge)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Split into ${state.multiDayCount} separate daily bills",
+                                                style = MaterialTheme.typography.labelLarge
+                                            )
+                                            Text(
+                                                text = "Off = 1 combined bill • On = Day 1..${state.multiDayCount} ledger entries",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Switch(
+                                            checked = state.splitIntoDailyBills,
+                                            onCheckedChange = {
+                                                feedback?.tick()
+                                                viewModel.toggleSplitIntoDailyBills(it)
+                                            },
+                                            modifier = Modifier.testTag("multiday_split_daily_switch")
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Column {
                     Text("Category", style = MaterialTheme.typography.labelLarge)
                     Spacer(Modifier.height(6.dp))
@@ -830,6 +975,18 @@ fun ExpenseEditorScreen(
                         }
                     }
                 }
+
+                // --- OPTIONAL ORGANIZER NOTE ---
+                OutlinedTextField(
+                    value = state.notes,
+                    onValueChange = { viewModel.updateNotes(it) },
+                    label = { Text("Note / Breakdown (Optional)") },
+                    placeholder = { Text("e.g. Includes 10% tip, 3 nights @ ₹3,500") },
+                    maxLines = 3,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("bill_notes_input")
+                )
 
                 // --- 3. PAID BY & SPLIT PAYMENT MODE (MULTIPLE PAYERS: CASH + UPI / CARD / POINTS) ---
                 BilliMorphCard(modifier = Modifier.fillMaxWidth()) {

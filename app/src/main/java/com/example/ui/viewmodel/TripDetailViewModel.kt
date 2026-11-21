@@ -9,7 +9,10 @@ import com.example.data.firebase.BilliRepository
 import com.example.data.firebase.SyncStatusMonitor
 import com.example.data.model.Bill
 import com.example.data.model.BillCategory
+import com.example.data.model.BillComment
+import com.example.data.model.BillReaction
 import com.example.data.model.DayBillGroup
+import com.example.data.model.ReactionType
 import com.example.data.model.SettlementRecord
 import com.example.data.model.SyncStatusUi
 import com.example.data.model.SyncedTripUser
@@ -27,6 +30,7 @@ import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -36,6 +40,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -89,6 +95,38 @@ class TripDetailViewModel(
 
     private val _filterState = MutableStateFlow(BillFilterState())
     val filterState: StateFlow<BillFilterState> = _filterState.asStateFlow()
+
+    private val _inspectedBillId = MutableStateFlow<String?>(null)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val inspectedBillComments: StateFlow<List<BillComment>> = _inspectedBillId
+        .flatMapLatest { billId ->
+            if (billId.isNullOrBlank()) {
+                flowOf(emptyList())
+            } else {
+                repository.observeBillComments(tripId, billId, currentUserId)
+            }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = emptyList()
+        )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val inspectedBillReactions: StateFlow<List<BillReaction>> = _inspectedBillId
+        .flatMapLatest { billId ->
+            if (billId.isNullOrBlank()) {
+                flowOf(emptyList())
+            } else {
+                repository.observeBillReactions(tripId, billId, currentUserId)
+            }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = emptyList()
+        )
 
     val syncStatus: StateFlow<SyncStatusUi> = syncMonitor.syncStatusFlow
         .stateIn(
@@ -235,6 +273,69 @@ class TripDetailViewModel(
 
     fun emitToast(message: String) {
         _toastEvents.tryEmit(message)
+    }
+
+    // --- PER-BILL COLLABORATION (COMMENTS & EMOJI REACTIONS — CREATOR-LOCK SAFE) ---
+
+    fun setInspectedBillId(billId: String?) {
+        _inspectedBillId.value = billId
+    }
+
+    private fun resolveCurrentUserDisplayName(): String {
+        val user = Firebase.auth.currentUser
+        return user?.displayName?.takeIf { it.isNotBlank() }
+            ?: user?.email?.substringBefore("@")?.takeIf { it.isNotBlank() }
+            ?: "Traveler"
+    }
+
+    fun addBillComment(billId: String, text: String) {
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            val isOnline = syncMonitor.isCurrentlyOnline()
+            val result = repository.addBillComment(
+                tripId = tripId,
+                billId = billId,
+                authorName = resolveCurrentUserDisplayName(),
+                text = clean,
+                isOnline = isOnline
+            )
+            result.onFailure { err ->
+                _toastEvents.tryEmit(err.localizedMessage ?: "Could not post comment")
+            }
+        }
+    }
+
+    fun deleteBillComment(billId: String, commentId: String) {
+        viewModelScope.launch {
+            val isOnline = syncMonitor.isCurrentlyOnline()
+            val result = repository.deleteBillComment(
+                tripId = tripId,
+                billId = billId,
+                commentId = commentId,
+                isOnline = isOnline
+            )
+            result.onFailure { err ->
+                _toastEvents.tryEmit(err.localizedMessage ?: "Could not delete comment")
+            }
+        }
+    }
+
+    fun toggleBillReaction(billId: String, reactionType: ReactionType, removeExisting: Boolean) {
+        viewModelScope.launch {
+            val isOnline = syncMonitor.isCurrentlyOnline()
+            val result = repository.toggleBillReaction(
+                tripId = tripId,
+                billId = billId,
+                authorName = resolveCurrentUserDisplayName(),
+                reactionType = reactionType,
+                removeExisting = removeExisting,
+                isOnline = isOnline
+            )
+            result.onFailure { err ->
+                _toastEvents.tryEmit(err.localizedMessage ?: "Could not update reaction")
+            }
+        }
     }
 
     // --- FILTER CONTROLS ---

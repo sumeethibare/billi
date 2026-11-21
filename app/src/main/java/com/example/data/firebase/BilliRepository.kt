@@ -5,9 +5,12 @@ import android.graphics.Bitmap
 import com.example.R
 import com.example.data.model.Bill
 import com.example.data.model.BillCategory
+import com.example.data.model.BillComment
 import com.example.data.model.BillPayer
+import com.example.data.model.BillReaction
 import com.example.data.model.BillReceipt
 import com.example.data.model.DEFAULT_CURRENCY_CODE
+import com.example.data.model.ReactionType
 import com.example.data.model.SettlementRecord
 import com.example.data.model.SplitMode
 import com.example.data.model.SyncedTripUser
@@ -372,6 +375,180 @@ class BilliRepository(
                 }
                 throw error
             }
+    }
+
+    fun observeAllUserTripLinks(userId: String): Flow<Map<String, String>> {
+        val path = "users/$userId/tripLinks"
+        return db.collection("users").document(userId)
+            .collection("tripLinks")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull { doc ->
+                    val link = doc.toObject(UserTripLink::class.java)
+                    val tripId = link?.tripId?.ifBlank { doc.id } ?: doc.id
+                    val memberId = link?.linkedMemberId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    tripId to memberId
+                }.toMap()
+            }
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError == null && error is CancellationException) throw error
+                if (auth.currentUser?.uid == userId) {
+                    handleFirestoreError(firestoreError ?: error, OperationType.LIST, path)
+                }
+                emit(emptyMap())
+            }
+    }
+
+    // --- BILL COLLABORATION (CREATOR-LOCK SAFE COMMENTS & REACTIONS) ---
+
+    fun observeBillComments(tripId: String, billId: String, userId: String): Flow<List<BillComment>> {
+        val path = "trips/$tripId/bills/$billId/comments"
+        return db.collection("trips").document(tripId)
+            .collection("bills").document(billId)
+            .collection("comments")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents
+                    .mapNotNull {
+                        it.toObject(BillComment::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                    }
+                    .sortedBy { it.createdAt?.toDate()?.time ?: Long.MAX_VALUE }
+            }
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError == null && error is CancellationException) throw error
+                if (auth.currentUser?.uid == userId) {
+                    handleFirestoreError(firestoreError ?: error, OperationType.LIST, path)
+                }
+                emit(emptyList())
+            }
+    }
+
+    suspend fun addBillComment(
+        tripId: String,
+        billId: String,
+        authorName: String,
+        text: String,
+        isOnline: Boolean
+    ): Result<String> {
+        val commentId = generateSafeId("cmt")
+        val path = "trips/$tripId/bills/$billId/comments/$commentId"
+        return try {
+            val uid = requireUserId()
+            val cleanText = text.trim().take(280)
+            require(cleanText.isNotEmpty()) { "Comment cannot be empty." }
+            val cleanAuthor = authorName.trim().ifBlank { "Traveler" }.take(80)
+            val payload = mapOf(
+                "tripId" to tripId,
+                "billId" to billId,
+                "userId" to uid,
+                "authorName" to cleanAuthor,
+                "text" to cleanText,
+                "createdAt" to FieldValue.serverTimestamp()
+            )
+            val task = db.collection("trips").document(tripId)
+                .collection("bills").document(billId)
+                .collection("comments").document(commentId)
+                .set(payload)
+            if (isOnline) task.await()
+            Result.success(commentId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteBillComment(
+        tripId: String,
+        billId: String,
+        commentId: String,
+        isOnline: Boolean
+    ): Result<Unit> {
+        val path = "trips/$tripId/bills/$billId/comments/$commentId"
+        return try {
+            requireUserId()
+            val task = db.collection("trips").document(tripId)
+                .collection("bills").document(billId)
+                .collection("comments").document(commentId)
+                .delete()
+            if (isOnline) task.await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
+    }
+
+    fun observeBillReactions(tripId: String, billId: String, userId: String): Flow<List<BillReaction>> {
+        val path = "trips/$tripId/bills/$billId/reactions"
+        return db.collection("trips").document(tripId)
+            .collection("bills").document(billId)
+            .collection("reactions")
+            .snapshots()
+            .map { snapshot ->
+                snapshot.documents.mapNotNull {
+                    it.toObject(BillReaction::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                }
+            }
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError == null && error is CancellationException) throw error
+                if (auth.currentUser?.uid == userId) {
+                    handleFirestoreError(firestoreError ?: error, OperationType.LIST, path)
+                }
+                emit(emptyList())
+            }
+    }
+
+    suspend fun toggleBillReaction(
+        tripId: String,
+        billId: String,
+        authorName: String,
+        reactionType: ReactionType,
+        removeExisting: Boolean,
+        isOnline: Boolean
+    ): Result<Unit> {
+        var path = "trips/$tripId/bills/$billId/reactions/unknown"
+        return try {
+            val uid = requireUserId()
+            path = "trips/$tripId/bills/$billId/reactions/$uid"
+            val docRef = db.collection("trips").document(tripId)
+                .collection("bills").document(billId)
+                .collection("reactions").document(uid)
+            val task = if (removeExisting) {
+                docRef.delete()
+            } else {
+                val cleanAuthor = authorName.trim().ifBlank { "Traveler" }.take(80)
+                docRef.set(
+                    mapOf(
+                        "tripId" to tripId,
+                        "billId" to billId,
+                        "userId" to uid,
+                        "authorName" to cleanAuthor,
+                        "emoji" to reactionType.wireValue,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+            if (isOnline) task.await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, path)
+            Result.failure(e)
+        }
     }
 
     // --- TRIP MUTATIONS ---
@@ -789,6 +966,7 @@ class BilliRepository(
         category: BillCategory,
         amountCents: Long,
         locationName: String,
+        notes: String = "",
         paidByMemberId: String,
         payers: List<BillPayer> = emptyList(),
         splitMode: SplitMode,
@@ -824,6 +1002,7 @@ class BilliRepository(
             }
 
             val cleanLocation = locationName.trim().take(160)
+            val cleanNotes = notes.trim().take(500)
             val hadReceipt = existingBill?.receiptAttached == true
             val finalReceiptAttached = when {
                 !newReceiptBase64.isNullOrBlank() -> true
@@ -849,6 +1028,7 @@ class BilliRepository(
                     "category" to category.wireValue,
                     "amountCents" to amountCents,
                     "locationName" to cleanLocation,
+                    "notes" to cleanNotes,
                     "paidByMemberId" to primaryPayerId,
                     "payers" to cleanPayers.map { it.toMap() },
                     "splitMode" to splitMode.wireValue,
@@ -870,6 +1050,7 @@ class BilliRepository(
                     "category" to category.wireValue,
                     "amountCents" to amountCents,
                     "locationName" to cleanLocation,
+                    "notes" to cleanNotes,
                     "paidByMemberId" to primaryPayerId,
                     "payers" to cleanPayers.map { it.toMap() },
                     "splitMode" to splitMode.wireValue,

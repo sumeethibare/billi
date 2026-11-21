@@ -11,6 +11,7 @@ import com.example.data.firebase.SyncStatusMonitor
 import com.example.data.model.Bill
 import com.example.data.model.BillCategory
 import com.example.data.model.BillPayer
+import com.example.data.model.MultiDayTemplate
 import com.example.data.model.PaymentMethod
 import com.example.data.model.SplitMode
 import com.example.data.model.Trip
@@ -48,6 +49,13 @@ data class ExpenseEditorUiState(
     val amountInput: String = "",
     val category: BillCategory = BillCategory.FOOD,
     val locationName: String = "",
+    val notes: String = "",
+    // Multi-Day / Per-Unit Recurring Template (Homestay nights, Scooter/Bike rent, Car rent)
+    val multiDayEnabled: Boolean = false,
+    val multiDayRateInput: String = "",
+    val multiDayCount: Int = 2,
+    val multiDayUnitLabel: String = "days",
+    val splitIntoDailyBills: Boolean = false,
     val paidByMemberId: String = "",
     val singlePayerMethod: PaymentMethod = PaymentMethod.UPI,
     // Split Payment Mode (Multiple Payers: e.g., Card + Cash/UPI)
@@ -73,6 +81,11 @@ data class ExpenseEditorUiState(
     val deleting: Boolean = false,
     val validationError: String? = null
 ) {
+    val multiDayRateCents: Long
+        get() = CurrencyFormatter.parseToMinorUnits(multiDayRateInput) ?: 0L
+
+    val multiDayComputedTotalCents: Long
+        get() = multiDayRateCents * multiDayCount.coerceIn(1, 30)
     val totalCents: Long
         get() = CurrencyFormatter.parseToMinorUnits(amountInput) ?: 0L
 
@@ -229,6 +242,7 @@ class ExpenseViewModel(
             amountInput = existingBill?.let { CurrencyFormatter.formatInput(it.amountCents) }.orEmpty(),
             category = existingBill?.billCategory() ?: rec?.defaultCategory ?: BillCategory.FOOD,
             locationName = existingBill?.locationName.orEmpty(),
+            notes = existingBill?.notes.orEmpty(),
             paidByMemberId = defaultPayer,
             singlePayerMethod = initialSingleMethod,
             multiPayerEnabled = isMultiPayer,
@@ -707,6 +721,86 @@ class ExpenseViewModel(
         _uiState.update { it.copy(validationError = message) }
     }
 
+    fun updateNotes(value: String) {
+        _uiState.update { it.copy(notes = value.take(500), validationError = null) }
+    }
+
+    fun toggleMultiDay(enabled: Boolean) {
+        _uiState.update { state ->
+            val nextRate = if (enabled && state.multiDayRateInput.isBlank() && state.totalCents > 0L) {
+                CurrencyFormatter.formatInput(state.totalCents)
+            } else {
+                state.multiDayRateInput
+            }
+            val next = state.copy(
+                multiDayEnabled = enabled,
+                multiDayRateInput = nextRate,
+                validationError = null
+            )
+            if (enabled && next.multiDayComputedTotalCents > 0L) {
+                next.copy(amountInput = CurrencyFormatter.formatInput(next.multiDayComputedTotalCents))
+            } else {
+                next
+            }
+        }
+        recheckDuplicate()
+    }
+
+    fun applyMultiDayTemplate(template: MultiDayTemplate) {
+        val total = template.suggestedRateCents * template.defaultDays
+        _uiState.update { state ->
+            state.copy(
+                multiDayEnabled = true,
+                title = template.label,
+                category = template.defaultCategory,
+                multiDayRateInput = CurrencyFormatter.formatInput(template.suggestedRateCents),
+                multiDayCount = template.defaultDays,
+                multiDayUnitLabel = template.unitLabel,
+                amountInput = CurrencyFormatter.formatInput(total),
+                notes = "${template.defaultDays} ${template.unitLabel} × ${CurrencyFormatter.format(template.suggestedRateCents)}/${template.unitLabel.removeSuffix("s")}",
+                validationError = null
+            )
+        }
+        recheckDuplicate()
+    }
+
+    fun updateMultiDayRate(raw: String) {
+        val filtered = raw.filter { it.isDigit() || it == '.' }
+        if (filtered.count { it == '.' } > 1) return
+        _uiState.update { state ->
+            val updated = state.copy(multiDayRateInput = filtered, validationError = null)
+            val total = updated.multiDayComputedTotalCents
+            val rateFmt = if (updated.multiDayRateCents > 0L) CurrencyFormatter.format(updated.multiDayRateCents) else ""
+            updated.copy(
+                amountInput = if (total > 0L) CurrencyFormatter.formatInput(total) else updated.amountInput,
+                notes = if (rateFmt.isNotBlank()) {
+                    "${updated.multiDayCount} ${updated.multiDayUnitLabel} × $rateFmt"
+                } else updated.notes
+            )
+        }
+        recheckDuplicate()
+    }
+
+    fun updateMultiDayCount(days: Int) {
+        val clamped = days.coerceIn(1, 30)
+        _uiState.update { state ->
+            val updated = state.copy(multiDayCount = clamped, validationError = null)
+            val total = updated.multiDayComputedTotalCents
+            val rateFmt = if (updated.multiDayRateCents > 0L) CurrencyFormatter.format(updated.multiDayRateCents) else ""
+            updated.copy(
+                amountInput = if (total > 0L) CurrencyFormatter.formatInput(total) else updated.amountInput,
+                notes = if (rateFmt.isNotBlank()) {
+                    "$clamped ${updated.multiDayUnitLabel} × $rateFmt"
+                } else updated.notes
+            )
+        }
+        recheckDuplicate()
+    }
+
+    fun toggleSplitIntoDailyBills(enabled: Boolean) {
+        _uiState.update { it.copy(splitIntoDailyBills = enabled) }
+    }
+
     fun saveExpense(
         trip: Trip,
         onSaved: (billId: String, message: String) -> Unit
@@ -779,6 +873,70 @@ class ExpenseViewModel(
             _uiState.update { it.copy(saving = true, validationError = null) }
             preferencesRepository?.setLastUsedSplitMode(state.splitMode.wireValue)
             val isOnline = syncMonitor.isCurrentlyOnline()
+
+            // Multi-Day Recurring batch mode: create consecutive day-stamped bills
+            val shouldBatchDaily = !state.isEditing &&
+                state.multiDayEnabled &&
+                state.splitIntoDailyBills &&
+                state.multiDayCount > 1 &&
+                state.multiDayRateCents > 0L
+
+            if (shouldBatchDaily) {
+                val perDayCents = state.multiDayRateCents
+                val perDaySplits = when (state.splitMode) {
+                    SplitMode.PERCENTAGE -> DebtSimplifier.computePercentageSplits(perDayCents, finalPercentages)
+                    else -> DebtSimplifier.computeEqualSplits(perDayCents, state.selectedMemberIds)
+                }
+                val perDayPayers = listOf(
+                    BillPayer(
+                        memberId = finalPayers.maxByOrNull { it.amountCents }?.memberId ?: state.paidByMemberId,
+                        amountCents = perDayCents,
+                        paymentMethod = state.singlePayerMethod.wireValue
+                    )
+                )
+                val unitSingular = state.multiDayUnitLabel.removeSuffix("s").replaceFirstChar { it.uppercase() }
+                var lastSavedId = ""
+                var firstError: Throwable? = null
+
+                for (dayIdx in 0 until state.multiDayCount) {
+                    val dayMillis = state.billDateMillis + (dayIdx * 86_400_000L)
+                    val res = repository.saveBill(
+                        trip = trip,
+                        existingBill = null,
+                        title = "$cleanTitle ($unitSingular ${dayIdx + 1}/${state.multiDayCount})",
+                        category = state.category,
+                        amountCents = perDayCents,
+                        locationName = state.locationName.trim(),
+                        notes = state.notes.trim(),
+                        paidByMemberId = perDayPayers.first().memberId,
+                        payers = perDayPayers,
+                        splitMode = if (state.splitMode == SplitMode.PERCENTAGE) SplitMode.PERCENTAGE else SplitMode.EQUAL,
+                        participantIds = state.selectedMemberIds,
+                        splits = perDaySplits,
+                        splitPercentages = if (state.splitMode == SplitMode.PERCENTAGE) finalPercentages else emptyMap(),
+                        billDateMillis = dayMillis,
+                        newReceiptBase64 = if (dayIdx == 0) state.newReceiptBase64 else null,
+                        removeExistingReceipt = false,
+                        isOnline = isOnline
+                    )
+                    res.onSuccess { lastSavedId = it }.onFailure { if (firstError == null) firstError = it }
+                }
+                _uiState.update { it.copy(saving = false) }
+                if (firstError != null && lastSavedId.isBlank()) {
+                    _uiState.update {
+                        it.copy(validationError = firstError?.localizedMessage ?: "Unable to save daily bills")
+                    }
+                } else {
+                    val msg = if (isOnline) {
+                        "Added ${state.multiDayCount} daily bills & synced"
+                    } else {
+                        "Saved ${state.multiDayCount} daily bills offline — queued for sync"
+                    }
+                    onSaved(lastSavedId, msg)
+                }
+                return@launch
+            }
+
             val result = repository.saveBill(
                 trip = trip,
                 existingBill = state.existingBill,
@@ -786,6 +944,7 @@ class ExpenseViewModel(
                 category = state.category,
                 amountCents = totalCents,
                 locationName = state.locationName.trim(),
+                notes = state.notes.trim(),
                 paidByMemberId = finalPayers.maxByOrNull { it.amountCents }?.memberId ?: state.paidByMemberId,
                 payers = finalPayers,
                 splitMode = state.splitMode,

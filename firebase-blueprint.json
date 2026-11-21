@@ -109,6 +109,10 @@
           "type": "string",
           "description": "Location ('where') description for the expense."
         },
+        "notes": {
+          "type": "string",
+          "description": "Optional organizer note or multi-day breakdown attached to the bill (max 500 chars)."
+        },
         "paidByMemberId": {
           "type": "string",
           "description": "Primary member ID of the person who paid the bill."
@@ -196,6 +200,34 @@
       },
       "required": ["tripId", "billId", "creatorUid", "imageBase64", "createdAt", "updatedAt"]
     },
+    "BillComment": {
+      "title": "BillComment",
+      "description": "Trip member comment on a specific bill, allowing clarification without bypassing Creator Lock.",
+      "type": "object",
+      "properties": {
+        "tripId": { "type": "string" },
+        "billId": { "type": "string" },
+        "userId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tripId", "billId", "userId", "authorName", "text", "createdAt"]
+    },
+    "BillReaction": {
+      "title": "BillReaction",
+      "description": "Per-user quick verification emoji reaction on a specific bill (document ID equals userId).",
+      "type": "object",
+      "properties": {
+        "tripId": { "type": "string" },
+        "billId": { "type": "string" },
+        "userId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "emoji": { "type": "string", "enum": ["verified", "check", "thanks", "receipt"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tripId", "billId", "userId", "authorName", "emoji", "updatedAt"]
+    },
     "SettlementRecord": {
       "title": "SettlementRecord",
       "description": "A recorded payment between two trip members that deducts from simplified balances.",
@@ -275,6 +307,14 @@
     "/trips/{tripId}/bills/{billId}": {
       "schema": { "$ref": "#/entities/Bill" },
       "description": "Itemized bills for a trip; creator and co-host writes while active, member read-only."
+    },
+    "/trips/{tripId}/bills/{billId}/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/BillComment" },
+      "description": "Member comments on a bill; any trip member can read and post own comments."
+    },
+    "/trips/{tripId}/bills/{billId}/reactions/{userId}": {
+      "schema": { "$ref": "#/entities/BillReaction" },
+      "description": "Per-user emoji reaction on a bill; strictly owner-written by trip members."
     },
     "/trips/{tripId}/receipts/{billId}": {
       "schema": { "$ref": "#/entities/BillReceipt" },

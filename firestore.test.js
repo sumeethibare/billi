@@ -411,3 +411,99 @@ test("Multi-payer split payment bills and soft-delete / restore respect Creator 
     })
   );
 });
+
+test("Bill notes stay Creator-locked while any trip member can add own comments and reactions", async () => {
+  const creatorDb = testEnv.authenticatedContext(CREATOR_UID).firestore();
+  const viewerDb = testEnv.authenticatedContext(VIEWER_UID).firestore();
+  const strangerDb = testEnv.authenticatedContext(STRANGER_UID).firestore();
+
+  await assertSucceeds(creatorDb.collection("trips").doc("trip_collab").set(validTripPayload()));
+  await assertSucceeds(
+    viewerDb.collection("trips").doc("trip_collab").update({
+      memberUids: [CREATOR_UID, VIEWER_UID],
+      lastJoinCodeAttempt: JOIN_CODE,
+      updatedAt: new Date(Date.now() - 600),
+    })
+  );
+
+  await assertSucceeds(
+    creatorDb.collection("trips").doc("trip_collab").collection("bills").doc("bill_c1").set(
+      validBillPayload("trip_collab", {
+        notes: "3 nights villa stay @ ₹4,200/night",
+      })
+    )
+  );
+
+  // Viewer STILL cannot modify bill notes or amounts (Creator Lock intact)
+  await assertFails(
+    viewerDb.collection("trips").doc("trip_collab").collection("bills").doc("bill_c1").update({
+      notes: "Tampered note",
+      updatedAt: new Date(Date.now() - 300),
+    })
+  );
+
+  const billRef = (db) => db.collection("trips").doc("trip_collab").collection("bills").doc("bill_c1");
+
+  // Viewer CAN post own comment & toggle own verification reaction
+  await assertSucceeds(
+    billRef(viewerDb).collection("comments").doc("cmt_1").set({
+      tripId: "trip_collab",
+      billId: "bill_c1",
+      userId: VIEWER_UID,
+      authorName: "Bob",
+      text: "Includes breakfast for all 3 mornings!",
+      createdAt: new Date(Date.now() - 250),
+    })
+  );
+  await assertSucceeds(
+    billRef(viewerDb).collection("reactions").doc(VIEWER_UID).set({
+      tripId: "trip_collab",
+      billId: "bill_c1",
+      userId: VIEWER_UID,
+      authorName: "Bob",
+      emoji: "verified",
+      updatedAt: new Date(Date.now() - 200),
+    })
+  );
+
+  // Viewer CANNOT spoof another user's reaction or delete creator's comment
+  await assertFails(
+    billRef(viewerDb).collection("reactions").doc(CREATOR_UID).set({
+      tripId: "trip_collab",
+      billId: "bill_c1",
+      userId: CREATOR_UID,
+      authorName: "Alice",
+      emoji: "verified",
+      updatedAt: new Date(Date.now() - 180),
+    })
+  );
+  await assertSucceeds(
+    billRef(creatorDb).collection("comments").doc("cmt_alice").set({
+      tripId: "trip_collab",
+      billId: "bill_c1",
+      userId: CREATOR_UID,
+      authorName: "Alice",
+      text: "Confirmed with host.",
+      createdAt: new Date(Date.now() - 150),
+    })
+  );
+  await assertFails(billRef(viewerDb).collection("comments").doc("cmt_alice").delete());
+
+  // Viewer CAN delete own comment & own reaction
+  await assertSucceeds(billRef(viewerDb).collection("comments").doc("cmt_1").delete());
+  await assertSucceeds(billRef(viewerDb).collection("reactions").doc(VIEWER_UID).delete());
+
+  // Stranger is completely blocked from reading or writing comments & reactions
+  await assertFails(billRef(strangerDb).collection("comments").get());
+  await assertFails(billRef(strangerDb).collection("reactions").get());
+  await assertFails(
+    billRef(strangerDb).collection("comments").doc("cmt_eve").set({
+      tripId: "trip_collab",
+      billId: "bill_c1",
+      userId: STRANGER_UID,
+      authorName: "Eve",
+      text: "Sneaking in",
+      createdAt: new Date(Date.now() - 100),
+    })
+  );
+});

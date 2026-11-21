@@ -3,7 +3,9 @@ package com.example
 import com.example.data.model.Bill
 import com.example.data.model.BillCategory
 import com.example.data.model.BillPayer
+import com.example.data.model.MultiDayTemplate
 import com.example.data.model.PaymentMethod
+import com.example.data.model.ReactionType
 import com.example.data.model.SettlementRecord
 import com.example.data.model.SplitMode
 import com.example.data.model.Trip
@@ -355,5 +357,65 @@ class DebtSimplifierTest {
         assertTrue(formatted.endsWith("500.50"))
         assertEquals(125_50L, CurrencyFormatter.parseToMinorUnits("125.50"))
         assertEquals(3333L, CurrencyFormatter.parsePercentToBps("33.33"))
+    }
+
+    @Test
+    fun multiDayTemplates_and_reactionTypes_areValidAndDeterministic() {
+        assertTrue(MultiDayTemplate.presets.size >= 4)
+        val homestay = MultiDayTemplate.presets.first { it.id == "stay" }
+        assertEquals(BillCategory.STAY, homestay.defaultCategory)
+        assertEquals("nights", homestay.unitLabel)
+
+        val ratePerNightCents = CurrencyFormatter.parseToMinorUnits("2400")!!
+        val nights = 3
+        val totalCents = ratePerNightCents * nights
+        assertEquals(720_000L, totalCents)
+
+        assertEquals(ReactionType.VERIFIED, ReactionType.fromWire("verified"))
+        assertEquals(ReactionType.CHECK, ReactionType.fromWire("check"))
+        assertEquals(ReactionType.THANKS, ReactionType.fromWire("thanks"))
+        assertEquals(ReactionType.RECEIPT, ReactionType.fromWire("receipt"))
+        assertEquals(ReactionType.VERIFIED, ReactionType.fromWire("unknown_wire"))
+    }
+
+    @Test
+    fun multiTripNetBalanceAggregation_sumsOwedAndOwingAccurately() {
+        val trip1 = sampleTrip()
+        val trip2 = sampleTrip().copy(id = "trip_coorg", title = "Coorg")
+
+        // In Trip 1: Alice paid ₹3,000 for 3 people -> Alice is owed +₹2,000
+        val bill1 = Bill(
+            id = "b_t1",
+            tripId = trip1.id,
+            title = "Villa Stay",
+            amountCents = 300_000L,
+            paidByMemberId = "m_alice",
+            participantIds = listOf("m_alice", "m_bob", "m_cara"),
+            splits = mapOf("m_alice" to 100_000L, "m_bob" to 100_000L, "m_cara" to 100_000L),
+            notes = "3 nights with breakfast"
+        )
+        // In Trip 2: Bob paid ₹1,500 for 3 people -> Alice owes -₹500
+        val bill2 = Bill(
+            id = "b_t2",
+            tripId = trip2.id,
+            title = "Jeep Safari",
+            amountCents = 150_000L,
+            paidByMemberId = "m_bob",
+            participantIds = listOf("m_alice", "m_bob", "m_cara"),
+            splits = mapOf("m_alice" to 50_000L, "m_bob" to 50_000L, "m_cara" to 50_000L)
+        )
+
+        val sum1 = DebtSimplifier.summarizeTrip(trip1, listOf(bill1), "uid_alice", null)
+        val sum2 = DebtSimplifier.summarizeTrip(trip2, listOf(bill2), "uid_alice", null)
+
+        val nets = listOfNotNull(sum1.currentUserNetCents, sum2.currentUserNetCents)
+        val totalOwed = nets.filter { it > 0L }.sum()
+        val totalYouOwe = nets.filter { it < 0L }.sumOf { -it }
+        val overallNet = nets.sum()
+
+        assertEquals(200_000L, totalOwed)
+        assertEquals(50_000L, totalYouOwe)
+        assertEquals(150_000L, overallNet)
+        assertEquals("3 nights with breakfast", bill1.notes)
     }
 }

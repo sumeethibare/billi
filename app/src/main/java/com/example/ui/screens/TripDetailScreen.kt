@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -38,6 +39,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
@@ -60,12 +62,12 @@ import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.RestoreFromTrash
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.StickyNote2
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -88,10 +90,14 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -112,14 +118,16 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.Bill
 import com.example.data.model.BillCategory
+import com.example.data.model.BillComment
+import com.example.data.model.BillReaction
 import com.example.data.model.CURRENCY_SYMBOL_INR
+import com.example.data.model.ReactionType
 import com.example.data.model.SettlementTransfer
 import com.example.data.model.SplitMode
 import com.example.data.model.SyncConnectionState
@@ -130,9 +138,16 @@ import com.example.domain.CurrencyFormatter
 import com.example.domain.DebtSimplifier
 import com.example.domain.SharedExpenseDraft
 import com.example.service.TripBubbleService
+import com.example.ui.components.BillCollaborationSection
 import com.example.ui.components.BilliMorphCard
+import com.example.ui.components.BilliPredictiveOverlay
 import com.example.ui.components.LocalBilliFeedback
+import com.example.ui.components.LocalReduceMotion
+import com.example.ui.components.ReceiptGallerySheet
+import com.example.ui.components.ReceiptZoomViewerOverlay
+import com.example.ui.components.ReceiptsGalleryStrip
 import com.example.ui.components.SyncStatusPill
+import com.example.ui.components.TripDetailSkeleton
 import com.example.ui.components.TripInsightsTabContent
 import com.example.ui.components.TripMembersTabContent
 import com.example.ui.components.TripSettlementsTabContent
@@ -158,6 +173,7 @@ import java.util.Locale
 fun TripDetailScreen(
     viewModel: TripDetailViewModel,
     expenseViewModel: ExpenseViewModel,
+    initialTripTitle: String = "",
     lastUsedSplitMode: SplitMode = SplitMode.EQUAL,
     autoOpenAddBill: Boolean = false,
     initialSharedDraft: SharedExpenseDraft? = null,
@@ -166,6 +182,7 @@ fun TripDetailScreen(
 ) {
     val context = LocalContext.current
     val feedback = LocalBilliFeedback.current
+    val reduceMotion = LocalReduceMotion.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -175,6 +192,8 @@ fun TripDetailScreen(
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val exportingPdf by viewModel.exportingPdf.collectAsStateWithLifecycle()
     val receiptCache by viewModel.receiptCache.collectAsStateWithLifecycle()
+    val inspectedBillComments by viewModel.inspectedBillComments.collectAsStateWithLifecycle()
+    val inspectedBillReactions by viewModel.inspectedBillReactions.collectAsStateWithLifecycle()
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var editingBill by remember { mutableStateOf<Bill?>(null) }
@@ -182,6 +201,7 @@ fun TripDetailScreen(
     var activeSharedDraft by remember { mutableStateOf<SharedExpenseDraft?>(null) }
     var inspectingBill by remember { mutableStateOf<Bill?>(null) }
     var viewingReceiptBill by remember { mutableStateOf<Bill?>(null) }
+    var showReceiptGallerySheet by remember { mutableStateOf(false) }
     var showEndTripConfirm by remember { mutableStateOf(false) }
     var exportedPdfFile by remember { mutableStateOf<File?>(null) }
     var recordingTransfer by remember { mutableStateOf<SettlementTransfer?>(null) }
@@ -219,8 +239,21 @@ fun TripDetailScreen(
         }
     }
 
+    LaunchedEffect(inspectingBill?.id) {
+        viewModel.setInspectedBillId(inspectingBill?.id)
+    }
+
     val currentContent = (detailState as? UiState.Success)?.data
     val canEdit = currentContent?.trip?.canEdit(viewModel.currentUserId) == true
+    val receiptBills = remember(currentContent?.bills) {
+        currentContent?.bills.orEmpty().filter { it.receiptAttached }
+    }
+
+    // Keep inspectingBill refreshed if Firestore updates it while the sheet is open
+    val liveInspectingBill = remember(inspectingBill?.id, currentContent?.bills) {
+        val targetId = inspectingBill?.id ?: return@remember null
+        currentContent?.bills?.firstOrNull { it.id == targetId } ?: inspectingBill
+    }
 
     // Auto-open Add Bill editor when launched from Glance Widget "+" or Share-to-Split
     LaunchedEffect(autoOpenAddBill, initialSharedDraft, currentContent != null, canEdit) {
@@ -245,57 +278,6 @@ fun TripDetailScreen(
         }
     }
 
-    // Full-screen interactive Trip Wrapped story cards
-    if (showTripWrapped && currentContent != null) {
-        TripWrappedScreen(
-            trip = currentContent.trip,
-            bills = currentContent.bills,
-            settlements = currentContent.settlements,
-            onClose = { showTripWrapped = false }
-        )
-        return
-    }
-
-    // Full-screen Expense Editor backed by ExpenseViewModel
-    if ((showAddBillEditor || editingBill != null) && currentContent != null && canEdit) {
-        val targetEdit = editingBill
-        LaunchedEffect(targetEdit?.id) {
-            if (targetEdit != null && targetEdit.receiptAttached) {
-                viewModel.loadReceiptIfNeeded(targetEdit.id)
-            }
-        }
-        ExpenseEditorScreen(
-            viewModel = expenseViewModel,
-            trip = currentContent.trip,
-            existingBill = targetEdit,
-            existingReceiptBitmap = targetEdit?.let { receiptCache[it.id] },
-            existingBills = currentContent.bills,
-            lastUsedSplitMode = lastUsedSplitMode,
-            initialSharedDraft = if (targetEdit == null) activeSharedDraft else null,
-            recentLocations = currentContent.recentLocations,
-            onSaved = { savedBillId, msg ->
-                viewModel.invalidateReceiptCache(savedBillId)
-                viewModel.loadReceiptIfNeeded(savedBillId, forceReload = true)
-                showAddBillEditor = false
-                editingBill = null
-                activeSharedDraft = null
-                viewModel.emitToast(msg)
-            },
-            onDeleted = { deletedBill, _ ->
-                showAddBillEditor = false
-                editingBill = null
-                activeSharedDraft = null
-                showUndoDeletedBillSnackbar(currentContent.trip, deletedBill)
-            },
-            onDismiss = {
-                showAddBillEditor = false
-                editingBill = null
-                activeSharedDraft = null
-            }
-        )
-        return
-    }
-
     val navItems = listOf(
         Triple("Bills", Icons.Rounded.ReceiptLong, "tab_bills"),
         Triple("Insights", Icons.Rounded.Insights, "tab_insights"),
@@ -303,36 +285,38 @@ fun TripDetailScreen(
         Triple("Members", Icons.Rounded.Group, "tab_members")
     )
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val useRail = maxWidth >= 720.dp
+    Box(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val useRail = maxWidth >= 720.dp
 
-        Scaffold(
-            contentWindowInsets = WindowInsets.safeDrawing,
-            containerColor = MaterialTheme.colorScheme.background,
-            snackbarHost = { SnackbarHost(snackbarHostState) },
-            topBar = {
-                TopAppBar(
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background
-                    ),
-                    navigationIcon = {
-                        IconButton(
-                            onClick = {
-                                feedback?.tick()
-                                onNavigateBack()
-                            },
-                            modifier = Modifier.testTag("trip_back_button")
-                        ) {
-                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back to trips")
-                        }
-                    },
-                    title = {
-                        Text(
-                            text = currentContent?.trip?.title ?: "Trip Ledger",
-                            style = MaterialTheme.typography.titleLarge,
-                            maxLines = 1
-                        )
-                    },
+            Scaffold(
+                contentWindowInsets = WindowInsets.safeDrawing,
+                containerColor = MaterialTheme.colorScheme.background,
+                snackbarHost = { SnackbarHost(snackbarHostState) },
+                topBar = {
+                    TopAppBar(
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        ),
+                        navigationIcon = {
+                            IconButton(
+                                onClick = {
+                                    feedback?.tick()
+                                    onNavigateBack()
+                                },
+                                modifier = Modifier.testTag("trip_back_button")
+                            ) {
+                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back to trips")
+                            }
+                        },
+                        title = {
+                            Text(
+                                text = currentContent?.trip?.title ?: initialTripTitle.ifBlank { "Trip Ledger" },
+                                style = MaterialTheme.typography.titleLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
                     actions = {
                         // Creator / Co-Host Soft-Delete Trash Bin button
                         if (canEdit && currentContent != null && currentContent.deletedBills.isNotEmpty()) {
@@ -482,112 +466,213 @@ fun TripDetailScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.TopCenter
                 ) {
-                    when (val state = detailState) {
-                        UiState.Loading -> {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    AnimatedContent(
+                        targetState = detailState,
+                        contentKey = { it::class },
+                        transitionSpec = {
+                            if (reduceMotion) {
+                                fadeIn(tween(80)) togetherWith fadeOut(tween(60))
+                            } else {
+                                fadeIn(tween(210)) togetherWith fadeOut(tween(140))
                             }
-                        }
-                        is UiState.Error -> {
-                            Column(
-                                modifier = Modifier
-                                    .widthIn(max = 520.dp)
-                                    .padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = "Trip Unavailable",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    text = state.message,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
+                        },
+                        label = "trip_detail_state_morph"
+                    ) { state ->
+                        when (state) {
+                            UiState.Loading -> {
+                                TripDetailSkeleton()
                             }
-                        }
-                        is UiState.Success -> {
-                            val content = state.data
-                            AnimatedContent(
-                                targetState = selectedTab,
-                                transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(150)) },
-                                label = "trip_tab_morph"
-                            ) { tab ->
-                                when (tab) {
-                                    0 -> BillsDayGroupedTabContent(
-                                        content = content,
-                                        filterState = filterState,
-                                        currentUserId = viewModel.currentUserId,
-                                        canEdit = canEdit,
-                                        onSearchChange = { viewModel.updateSearchQuery(it) },
-                                        onToggleCategory = { viewModel.toggleCategoryFilter(it) },
-                                        onTogglePayer = { viewModel.togglePayerFilter(it) },
-                                        onToggleMyBills = { viewModel.toggleOnlyMyBills() },
-                                        onClearFilters = { viewModel.clearFilters() },
-                                        onSelectMyMember = { viewModel.selectMyMemberProfile(it) },
-                                        onInspectBill = { bill ->
-                                            if (bill.receiptAttached) viewModel.loadReceiptIfNeeded(bill.id)
-                                            inspectingBill = bill
-                                        },
-                                        onViewReceipt = { bill ->
-                                            viewModel.loadReceiptIfNeeded(bill.id)
-                                            viewingReceiptBill = bill
-                                        },
-                                        onEditBill = { bill ->
-                                            if (bill.receiptAttached) viewModel.loadReceiptIfNeeded(bill.id)
-                                            editingBill = bill
-                                        },
-                                        onDeleteBill = { bill ->
-                                            feedback?.tick()
-                                            viewModel.softDeleteBill(content.trip, bill) { deleted ->
-                                                showUndoDeletedBillSnackbar(content.trip, deleted)
-                                            }
+                            is UiState.Error -> {
+                                Column(
+                                    modifier = Modifier
+                                        .widthIn(max = 520.dp)
+                                        .padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "Trip Unavailable",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        text = state.message,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                            is UiState.Success -> {
+                                val content = state.data
+                                AnimatedContent(
+                                    targetState = selectedTab,
+                                    transitionSpec = {
+                                        if (reduceMotion) {
+                                            fadeIn(tween(80)) togetherWith fadeOut(tween(60))
+                                        } else {
+                                            fadeIn(tween(200)) togetherWith fadeOut(tween(130))
                                         }
-                                    )
-                                    1 -> TripInsightsTabContent(
-                                        content = content,
-                                        canManageBudget = content.trip.canManageTripAdmin(viewModel.currentUserId),
-                                        onEditBudgetClick = { showBudgetDialog = true },
-                                        onOpenTripWrapped = { showTripWrapped = true }
-                                    )
-                                    2 -> TripSettlementsTabContent(
-                                        content = content,
-                                        currentUserId = viewModel.currentUserId,
-                                        canEdit = canEdit,
-                                        exportingPdf = exportingPdf,
-                                        onMarkTransferPaid = { recordingTransfer = it },
-                                        onDeleteSettlement = { rec ->
-                                            viewModel.deleteSettlement(content.trip, rec.id)
-                                        },
-                                        onEndTripClick = { showEndTripConfirm = true },
-                                        onExportPdfOnly = {
-                                            viewModel.exportArchivalPdfOnly(context, content) { file ->
-                                                exportedPdfFile = file
+                                    },
+                                    label = "trip_tab_morph"
+                                ) { tab ->
+                                    when (tab) {
+                                        0 -> BillsDayGroupedTabContent(
+                                            content = content,
+                                            filterState = filterState,
+                                            receiptCache = receiptCache,
+                                            currentUserId = viewModel.currentUserId,
+                                            canEdit = canEdit,
+                                            onSearchChange = { viewModel.updateSearchQuery(it) },
+                                            onToggleCategory = { viewModel.toggleCategoryFilter(it) },
+                                            onTogglePayer = { viewModel.togglePayerFilter(it) },
+                                            onToggleMyBills = { viewModel.toggleOnlyMyBills() },
+                                            onClearFilters = { viewModel.clearFilters() },
+                                            onSelectMyMember = { viewModel.selectMyMemberProfile(it) },
+                                            onRequestLoadReceipt = { billId -> viewModel.loadReceiptIfNeeded(billId) },
+                                            onOpenFullGallery = { showReceiptGallerySheet = true },
+                                            onInspectBill = { bill ->
+                                                if (bill.receiptAttached) viewModel.loadReceiptIfNeeded(bill.id)
+                                                inspectingBill = bill
+                                            },
+                                            onViewReceipt = { bill ->
+                                                viewModel.loadReceiptIfNeeded(bill.id)
+                                                viewingReceiptBill = bill
+                                            },
+                                            onEditBill = { bill ->
+                                                if (bill.receiptAttached) viewModel.loadReceiptIfNeeded(bill.id)
+                                                editingBill = bill
+                                            },
+                                            onDeleteBill = { bill ->
+                                                feedback?.warningNudge()
+                                                viewModel.softDeleteBill(content.trip, bill) { deleted ->
+                                                    showUndoDeletedBillSnackbar(content.trip, deleted)
+                                                }
                                             }
-                                        }
-                                    )
-                                    else -> TripMembersTabContent(
-                                        content = content,
-                                        currentUserId = viewModel.currentUserId,
-                                        isBusy = busy,
-                                        onAddMember = { name, clear -> viewModel.addMember(content.trip, name, clear) },
-                                        onRemoveMember = { memberId ->
-                                            viewModel.removeMember(content.trip, memberId, content.bills)
-                                        },
-                                        onToggleCoHost = { uid, name ->
-                                            viewModel.toggleCoHost(content.trip, uid, name)
-                                        },
-                                        onRequestOwnershipTransfer = { user -> transferringToUser = user },
-                                        onCopiedMessage = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
-                                    )
+                                        )
+                                        1 -> TripInsightsTabContent(
+                                            content = content,
+                                            canManageBudget = content.trip.canManageTripAdmin(viewModel.currentUserId),
+                                            onEditBudgetClick = { showBudgetDialog = true },
+                                            onOpenTripWrapped = { showTripWrapped = true }
+                                        )
+                                        2 -> TripSettlementsTabContent(
+                                            content = content,
+                                            currentUserId = viewModel.currentUserId,
+                                            canEdit = canEdit,
+                                            exportingPdf = exportingPdf,
+                                            onMarkTransferPaid = { recordingTransfer = it },
+                                            onDeleteSettlement = { rec ->
+                                                viewModel.deleteSettlement(content.trip, rec.id)
+                                            },
+                                            onEndTripClick = { showEndTripConfirm = true },
+                                            onExportPdfOnly = {
+                                                viewModel.exportArchivalPdfOnly(context, content) { file ->
+                                                    exportedPdfFile = file
+                                                }
+                                            }
+                                        )
+                                        else -> TripMembersTabContent(
+                                            content = content,
+                                            currentUserId = viewModel.currentUserId,
+                                            isBusy = busy,
+                                            onAddMember = { name, clear -> viewModel.addMember(content.trip, name, clear) },
+                                            onRemoveMember = { memberId ->
+                                                viewModel.removeMember(content.trip, memberId, content.bills)
+                                            },
+                                            onToggleCoHost = { uid, name ->
+                                                viewModel.toggleCoHost(content.trip, uid, name)
+                                            },
+                                            onRequestOwnershipTransfer = { user -> transferringToUser = user },
+                                            onCopiedMessage = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+        }
+
+        // --- PREDICTIVE BACK FULL-SCREEN OVERLAYS (PRESERVE UNDERLYING SCROLL POSITION) ---
+
+        val isEditorVisible = (showAddBillEditor || editingBill != null) && currentContent != null && canEdit
+        BilliPredictiveOverlay(
+            visible = isEditorVisible,
+            onDismiss = {
+                showAddBillEditor = false
+                editingBill = null
+                activeSharedDraft = null
+            }
+        ) {
+            if (currentContent != null) {
+                val targetEdit = editingBill
+                LaunchedEffect(targetEdit?.id) {
+                    if (targetEdit != null && targetEdit.receiptAttached) {
+                        viewModel.loadReceiptIfNeeded(targetEdit.id)
+                    }
+                }
+                ExpenseEditorScreen(
+                    viewModel = expenseViewModel,
+                    trip = currentContent.trip,
+                    existingBill = targetEdit,
+                    existingReceiptBitmap = targetEdit?.let { receiptCache[it.id] },
+                    existingBills = currentContent.bills,
+                    lastUsedSplitMode = lastUsedSplitMode,
+                    initialSharedDraft = if (targetEdit == null) activeSharedDraft else null,
+                    recentLocations = currentContent.recentLocations,
+                    onSaved = { savedBillId, msg ->
+                        viewModel.invalidateReceiptCache(savedBillId)
+                        viewModel.loadReceiptIfNeeded(savedBillId, forceReload = true)
+                        showAddBillEditor = false
+                        editingBill = null
+                        activeSharedDraft = null
+                        viewModel.emitToast(msg)
+                    },
+                    onDeleted = { deletedBill, _ ->
+                        showAddBillEditor = false
+                        editingBill = null
+                        activeSharedDraft = null
+                        showUndoDeletedBillSnackbar(currentContent.trip, deletedBill)
+                    },
+                    onDismiss = {
+                        showAddBillEditor = false
+                        editingBill = null
+                        activeSharedDraft = null
+                    }
+                )
+            }
+        }
+
+        BilliPredictiveOverlay(
+            visible = showTripWrapped && currentContent != null,
+            onDismiss = { showTripWrapped = false }
+        ) {
+            if (currentContent != null) {
+                TripWrappedScreen(
+                    trip = currentContent.trip,
+                    bills = currentContent.bills,
+                    settlements = currentContent.settlements,
+                    onClose = { showTripWrapped = false }
+                )
+            }
+        }
+
+        BilliPredictiveOverlay(
+            visible = viewingReceiptBill != null && receiptBills.isNotEmpty(),
+            onDismiss = { viewingReceiptBill = null }
+        ) {
+            val activeReceipt = viewingReceiptBill
+            if (activeReceipt != null && receiptBills.isNotEmpty()) {
+                ReceiptZoomViewerOverlay(
+                    receiptBills = receiptBills,
+                    initialBillId = activeReceipt.id,
+                    receiptCache = receiptCache,
+                    onRequestLoadReceipt = { billId -> viewModel.loadReceiptIfNeeded(billId) },
+                    onClose = { viewingReceiptBill = null }
+                )
             }
         }
     }
@@ -856,14 +941,32 @@ fun TripDetailScreen(
         }
     }
 
-    // --- BILL DETAIL MODAL ---
-    inspectingBill?.let { bill ->
+    // --- RECEIPT GALLERY BOTTOM SHEET ---
+    if (showReceiptGallerySheet && receiptBills.isNotEmpty()) {
+        ReceiptGallerySheet(
+            receiptBills = receiptBills,
+            receiptCache = receiptCache,
+            onRequestLoadReceipt = { billId -> viewModel.loadReceiptIfNeeded(billId) },
+            onSelectReceipt = { bill ->
+                showReceiptGallerySheet = false
+                viewModel.loadReceiptIfNeeded(bill.id)
+                viewingReceiptBill = bill
+            },
+            onDismiss = { showReceiptGallerySheet = false }
+        )
+    }
+
+    // --- BILL DETAIL & COLLABORATION BOTTOM SHEET ---
+    liveInspectingBill?.let { bill ->
         val trip = currentContent?.trip
         if (trip != null) {
-            BillDetailDialog(
+            BillDetailSheet(
                 trip = trip,
                 bill = bill,
                 receiptBitmap = receiptCache[bill.id],
+                comments = inspectedBillComments,
+                reactions = inspectedBillReactions,
+                currentUserId = viewModel.currentUserId,
                 canEdit = canEdit,
                 onDismiss = { inspectingBill = null },
                 onViewFullReceipt = {
@@ -879,60 +982,17 @@ fun TripDetailScreen(
                     viewModel.softDeleteBill(trip, bill) { deleted ->
                         showUndoDeletedBillSnackbar(trip, deleted)
                     }
+                },
+                onToggleReaction = { type, removeExisting ->
+                    viewModel.toggleBillReaction(bill.id, type, removeExisting)
+                },
+                onPostComment = { text ->
+                    viewModel.addBillComment(bill.id, text)
+                },
+                onDeleteComment = { commentId ->
+                    viewModel.deleteBillComment(bill.id, commentId)
                 }
             )
-        }
-    }
-
-    // --- FULL-SCREEN RECEIPT PHOTO VIEWER ---
-    viewingReceiptBill?.let { bill ->
-        val bmp = receiptCache[bill.id]
-        Dialog(
-            onDismissRequest = { viewingReceiptBill = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0E110F)) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    if (bmp != null) {
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = "Receipt photo for ${bill.title}",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                        )
-                    } else {
-                        Column(
-                            modifier = Modifier.align(Alignment.Center),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            CircularProgressIndicator(color = Color.White)
-                            Spacer(Modifier.height(10.dp))
-                            Text("Loading receipt photo…", color = Color.White)
-                        }
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.TopCenter)
-                            .background(Color.Black.copy(alpha = 0.55f))
-                            .padding(horizontal = 12.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(bill.title, style = MaterialTheme.typography.titleMedium, color = Color.White)
-                            if (bill.locationName.isNotBlank()) {
-                                Text(bill.locationName, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.8f))
-                            }
-                        }
-                        IconButton(onClick = { viewingReceiptBill = null }) {
-                            Icon(Icons.Rounded.Close, contentDescription = "Close receipt viewer", tint = Color.White)
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -1016,10 +1076,12 @@ fun TripDetailScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BillsDayGroupedTabContent(
     content: TripDetailContent,
     filterState: BillFilterState,
+    receiptCache: Map<String, Bitmap>,
     currentUserId: String,
     canEdit: Boolean,
     onSearchChange: (String) -> Unit,
@@ -1028,22 +1090,30 @@ private fun BillsDayGroupedTabContent(
     onToggleMyBills: () -> Unit,
     onClearFilters: () -> Unit,
     onSelectMyMember: (String) -> Unit,
+    onRequestLoadReceipt: (String) -> Unit,
+    onOpenFullGallery: () -> Unit,
     onInspectBill: (Bill) -> Unit,
     onViewReceipt: (Bill) -> Unit,
     onEditBill: (Bill) -> Unit,
     onDeleteBill: (Bill) -> Unit
 ) {
+    val feedback = LocalBilliFeedback.current
     val memberMap = remember(content.trip.members) {
         content.trip.members.associate { it.memberId to it.displayName }
     }
     val myMemberId = content.linkedMemberId
+
+    val receiptBills = remember(content.bills) {
+        content.bills.filter { it.receiptAttached }
+    }
 
     val filteredBills = remember(content.bills, filterState, myMemberId) {
         val q = filterState.searchQuery.trim().lowercase()
         content.bills.filter { bill ->
             val matchQuery = q.isEmpty() ||
                 bill.title.lowercase().contains(q) ||
-                bill.locationName.lowercase().contains(q)
+                bill.locationName.lowercase().contains(q) ||
+                bill.notes.lowercase().contains(q)
             val matchCat = filterState.selectedCategory == null ||
                 bill.billCategory() == filterState.selectedCategory
             val matchPayer = filterState.selectedPayerId == null ||
@@ -1075,6 +1145,18 @@ private fun BillsDayGroupedTabContent(
                 currentUserId = currentUserId,
                 onSelectMyMember = onSelectMyMember
             )
+        }
+
+        if (receiptBills.isNotEmpty()) {
+            item(key = "receipts_gallery_strip_item") {
+                ReceiptsGalleryStrip(
+                    receiptBills = receiptBills,
+                    receiptCache = receiptCache,
+                    onRequestLoadReceipt = onRequestLoadReceipt,
+                    onOpenReceiptZoom = onViewReceipt,
+                    onOpenFullGallery = onOpenFullGallery
+                )
+            }
         }
 
         // --- SEARCH & FILTER BAR ---
@@ -1230,162 +1312,271 @@ private fun BillsDayGroupedTabContent(
                         "${bill.billSplitMode().label} • ${bill.participantIds.size} of ${content.trip.members.size}"
                     }
 
-                    BilliMorphCard(
-                        onClick = { onInspectBill(bill) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("bill_card_${bill.id}")
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = catColor.copy(alpha = 0.14f)
+                    val billCardContent: @Composable () -> Unit = {
+                        BilliMorphCard(
+                            onClick = { onInspectBill(bill) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("bill_card_${bill.id}")
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
-                                            Text(
-                                                text = bill.billCategory().label,
-                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                                color = catColor,
-                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                        // Offline-First Per-Card Pending Sync Badge
-                                        if (isPendingSync) {
                                             Surface(
-                                                shape = RoundedCornerShape(999.dp),
-                                                color = MaterialTheme.colorScheme.tertiaryContainer,
-                                                modifier = Modifier.testTag("bill_pending_sync_${bill.id}")
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = catColor.copy(alpha = 0.14f)
+                                            ) {
+                                                Text(
+                                                    text = bill.billCategory().label,
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = catColor,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            if (isPendingSync) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(999.dp),
+                                                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                                                    modifier = Modifier.testTag("bill_pending_sync_${bill.id}")
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Rounded.CloudUpload,
+                                                            contentDescription = "Queued for cloud sync",
+                                                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                            modifier = Modifier.size(12.dp)
+                                                        )
+                                                        Text(
+                                                            text = "Sync queued",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.height(6.dp))
+                                        Text(
+                                            text = bill.title,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(
+                                        text = CurrencyFormatter.format(bill.amountCents),
+                                        style = MoneyTitleStyle,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+
+                                if (bill.locationName.isNotBlank()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.LocationOn,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.secondary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            text = bill.locationName,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                if (bill.notes.isNotBlank()) {
+                                    Spacer(Modifier.height(5.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.StickyNote2,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.78f),
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            text = bill.notes,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Paid by $payerSummary • $subsetLabel",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f)
+                                    )
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (bill.receiptAttached) {
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer,
+                                                modifier = Modifier
+                                                    .clickable { onViewReceipt(bill) }
+                                                    .testTag("bill_receipt_pill_${bill.id}")
                                             ) {
                                                 Row(
-                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     Icon(
-                                                        imageVector = Icons.Rounded.CloudUpload,
-                                                        contentDescription = "Queued for cloud sync",
-                                                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                                        modifier = Modifier.size(12.dp)
+                                                        imageVector = Icons.Rounded.Image,
+                                                        contentDescription = "View receipt",
+                                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                        modifier = Modifier.size(14.dp)
                                                     )
+                                                    Spacer(Modifier.width(4.dp))
                                                     Text(
-                                                        text = "Sync queued",
+                                                        text = "Receipt",
                                                         style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer
                                                     )
                                                 }
                                             }
                                         }
-                                    }
-                                    Spacer(Modifier.height(6.dp))
-                                    Text(
-                                        text = bill.title,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                                Spacer(Modifier.width(10.dp))
-                                Text(
-                                    text = CurrencyFormatter.format(bill.amountCents),
-                                    style = MoneyTitleStyle,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-
-                            if (bill.locationName.isNotBlank()) {
-                                Spacer(Modifier.height(6.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.LocationOn,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.secondary,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text(
-                                        text = bill.locationName,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-
-                            Spacer(Modifier.height(10.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Paid by $payerSummary • $subsetLabel",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.weight(1f)
-                                )
-
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (bill.receiptAttached) {
-                                        Surface(
-                                            shape = RoundedCornerShape(8.dp),
-                                            color = MaterialTheme.colorScheme.primaryContainer,
-                                            modifier = Modifier
-                                                .clickable { onViewReceipt(bill) }
-                                                .testTag("bill_receipt_pill_${bill.id}")
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                verticalAlignment = Alignment.CenterVertically
+                                        if (canEdit) {
+                                            IconButton(
+                                                onClick = { onEditBill(bill) },
+                                                modifier = Modifier.testTag("edit_bill_${bill.id}")
                                             ) {
                                                 Icon(
-                                                    imageVector = Icons.Rounded.Image,
-                                                    contentDescription = "View receipt",
-                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                                Spacer(Modifier.width(4.dp))
-                                                Text(
-                                                    text = "Receipt",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    imageVector = Icons.Rounded.Edit,
+                                                    contentDescription = "Edit bill",
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(18.dp)
                                                 )
                                             }
-                                        }
-                                    }
-                                    if (canEdit) {
-                                        IconButton(
-                                            onClick = { onEditBill(bill) },
-                                            modifier = Modifier.testTag("edit_bill_${bill.id}")
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Edit,
-                                                contentDescription = "Edit bill",
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = { onDeleteBill(bill) },
-                                            modifier = Modifier.testTag("delete_bill_${bill.id}")
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.DeleteOutline,
-                                                contentDescription = "Delete bill",
-                                                tint = MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(18.dp)
-                                            )
+                                            IconButton(
+                                                onClick = { onDeleteBill(bill) },
+                                                modifier = Modifier.testTag("delete_bill_${bill.id}")
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.DeleteOutline,
+                                                    contentDescription = "Delete bill",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+
+                    if (canEdit) {
+                        val dismissState = rememberSwipeToDismissBoxState(
+                            confirmValueChange = { target ->
+                                when (target) {
+                                    SwipeToDismissBoxValue.StartToEnd -> {
+                                        feedback?.tick()
+                                        onEditBill(bill)
+                                        false
+                                    }
+                                    SwipeToDismissBoxValue.EndToStart -> {
+                                        onDeleteBill(bill)
+                                        false
+                                    }
+                                    SwipeToDismissBoxValue.Settled -> false
+                                }
+                            }
+                        )
+                        SwipeToDismissBox(
+                            state = dismissState,
+                            enableDismissFromStartToEnd = true,
+                            enableDismissFromEndToStart = true,
+                            backgroundContent = {
+                                val direction = dismissState.dismissDirection
+                                val bgColor by animateColorAsState(
+                                    targetValue = when (direction) {
+                                        SwipeToDismissBoxValue.StartToEnd -> MaterialTheme.colorScheme.primaryContainer
+                                        SwipeToDismissBoxValue.EndToStart -> MaterialTheme.colorScheme.errorContainer
+                                        else -> Color.Transparent
+                                    },
+                                    label = "bill_swipe_bg"
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(bgColor)
+                                        .padding(horizontal = 20.dp),
+                                    contentAlignment = if (direction == SwipeToDismissBoxValue.StartToEnd) {
+                                        Alignment.CenterStart
+                                    } else {
+                                        Alignment.CenterEnd
+                                    }
+                                ) {
+                                    when (direction) {
+                                        SwipeToDismissBoxValue.StartToEnd -> {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Edit,
+                                                    contentDescription = "Swipe to edit",
+                                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                                )
+                                                Text(
+                                                    text = "Edit Bill",
+                                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                )
+                                            }
+                                        }
+                                        SwipeToDismissBoxValue.EndToStart -> {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Text(
+                                                    text = "Delete",
+                                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                                )
+                                                Icon(
+                                                    imageVector = Icons.Rounded.DeleteOutline,
+                                                    contentDescription = "Swipe to delete",
+                                                    tint = MaterialTheme.colorScheme.onErrorContainer
+                                                )
+                                            }
+                                        }
+                                        else -> Unit
+                                    }
+                                }
+                            },
+                            content = { billCardContent() }
+                        )
+                    } else {
+                        billCardContent()
                     }
                 }
             }
@@ -1393,138 +1584,224 @@ private fun BillsDayGroupedTabContent(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun BillDetailDialog(
+private fun BillDetailSheet(
     trip: Trip,
     bill: Bill,
     receiptBitmap: Bitmap?,
+    comments: List<BillComment>,
+    reactions: List<BillReaction>,
+    currentUserId: String,
     canEdit: Boolean,
     onDismiss: () -> Unit,
     onViewFullReceipt: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onToggleReaction: (ReactionType, Boolean) -> Unit,
+    onPostComment: (String) -> Unit,
+    onDeleteComment: (String) -> Unit
 ) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val memberMap = remember(trip.members) { trip.members.associate { it.memberId to it.displayName } }
     val dateFmt = remember { SimpleDateFormat("MMM d, yyyy • h:mm a", Locale.US) }
     val effPayers = bill.effectivePayers()
+    val catColor = categoryAccentColor(bill.billCategory())
 
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = {
-            Column {
-                Text(bill.title, style = MaterialTheme.typography.titleLarge)
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = catColor.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = bill.billCategory().label,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = catColor,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(bill.title, style = MaterialTheme.typography.titleLarge)
+                }
+                Spacer(Modifier.width(12.dp))
                 Text(
                     text = CurrencyFormatter.format(bill.amountCents),
                     style = MoneyTitleStyle,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (effPayers.size > 1) {
-                    Text(
-                        text = "Split Payment (${bill.billCategory().label})",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    effPayers.forEach { payer ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "${memberMap[payer.memberId] ?: "Member"} (${payer.method().label})",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                text = CurrencyFormatter.format(payer.amountCents),
-                                style = MoneyBodyStyle.copy(fontWeight = FontWeight.SemiBold)
-                            )
-                        }
-                    }
-                } else {
-                    val method = effPayers.firstOrNull()?.method()?.label ?: "UPI"
-                    Text(
-                        text = "Paid by ${memberMap[bill.paidByMemberId] ?: "Member"} via $method • ${bill.billCategory().label}",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
 
-                if (bill.locationName.isNotBlank()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.LocationOn, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.secondary)
-                        Spacer(Modifier.width(4.dp))
-                        Text(bill.locationName, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                if (bill.billDateMillis > 0L) {
-                    Text(
-                        text = dateFmt.format(Date(bill.billDateMillis)),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                if (bill.receiptAttached) {
-                    if (receiptBitmap != null) {
-                        Image(
-                            bitmap = receiptBitmap.asImageBitmap(),
-                            contentDescription = "Receipt thumbnail",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(150.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable(onClick = onViewFullReceipt)
-                        )
-                    } else {
-                        OutlinedButton(onClick = onViewFullReceipt, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Rounded.Image, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("View Attached Receipt")
-                        }
-                    }
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            if (effPayers.size > 1) {
                 Text(
-                    text = "Split Breakdown (${bill.billSplitMode().label})",
+                    text = "Split Payment (${effPayers.size} payers)",
                     style = MaterialTheme.typography.labelLarge
                 )
-                bill.splits.forEach { (mid, share) ->
-                    val pctLabel = if (bill.billSplitMode() == SplitMode.PERCENTAGE) {
-                        val bps = bill.splitPercentages[mid]
-                        if (bps != null) " (${CurrencyFormatter.formatPercentInput(bps)}%)" else ""
-                    } else ""
+                effPayers.forEach { payer ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("${memberMap[mid] ?: "Member"}$pctLabel", style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            text = CurrencyFormatter.format(share),
+                            text = "${memberMap[payer.memberId] ?: "Member"} (${payer.method().label})",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            text = CurrencyFormatter.format(payer.amountCents),
                             style = MoneyBodyStyle.copy(fontWeight = FontWeight.SemiBold)
                         )
                     }
                 }
+            } else {
+                val method = effPayers.firstOrNull()?.method()?.label ?: "UPI"
+                Text(
+                    text = "Paid by ${memberMap[bill.paidByMemberId] ?: "Member"} via $method",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-        },
-        confirmButton = {
-            if (canEdit) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onDelete) {
+
+            if (bill.locationName.isNotBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Rounded.LocationOn,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(bill.locationName, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (bill.billDateMillis > 0L) {
+                Text(
+                    text = dateFmt.format(Date(bill.billDateMillis)),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (bill.receiptAttached) {
+                if (receiptBitmap != null) {
+                    Image(
+                        bitmap = receiptBitmap.asImageBitmap(),
+                        contentDescription = "Receipt thumbnail — tap to pinch-zoom",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(164.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable(onClick = onViewFullReceipt)
+                    )
+                } else {
+                    OutlinedButton(onClick = onViewFullReceipt, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Rounded.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Open Full-Screen Receipt")
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            Text(
+                text = "Split Breakdown (${bill.billSplitMode().label})",
+                style = MaterialTheme.typography.labelLarge
+            )
+            bill.splits.forEach { (mid, share) ->
+                val pctLabel = if (bill.billSplitMode() == SplitMode.PERCENTAGE) {
+                    val bps = bill.splitPercentages[mid]
+                    if (bps != null) " (${CurrencyFormatter.formatPercentInput(bps)}%)" else ""
+                } else ""
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("${memberMap[mid] ?: "Member"}$pctLabel", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = CurrencyFormatter.format(share),
+                        style = MoneyBodyStyle.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            // Creator-Lock-Safe Notes, Verification Emoji Reactions & Member Comment Thread
+            BillCollaborationSection(
+                billNotes = bill.notes,
+                comments = comments,
+                reactions = reactions,
+                currentUserId = currentUserId,
+                canModerateComments = canEdit,
+                onToggleReaction = onToggleReaction,
+                onPostComment = onPostComment,
+                onDeleteComment = onDeleteComment
+            )
+
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (canEdit) {
+                    OutlinedButton(
+                        onClick = onDelete,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("sheet_delete_bill_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DeleteOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
                         Text("Delete", color = MaterialTheme.colorScheme.error)
                     }
-                    Button(onClick = onEdit) { Text("Edit") }
+                    Button(
+                        onClick = onEdit,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("sheet_edit_bill_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Edit Bill")
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Close")
+                    }
                 }
-            } else {
-                TextButton(onClick = onDismiss) { Text("Close") }
-            }
-        },
-        dismissButton = {
-            if (canEdit) {
-                TextButton(onClick = onDismiss) { Text("Close") }
             }
         }
-    )
+    }
 }

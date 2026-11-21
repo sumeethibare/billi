@@ -124,6 +124,7 @@ data class Bill(
     val category: String = BillCategory.FOOD.wireValue,
     val amountCents: Long = 0L,
     val locationName: String = "",
+    val notes: String = "",
     val paidByMemberId: String = "",
     val payers: List<BillPayer> = emptyList(),
     val splitMode: String = SplitMode.EQUAL.wireValue,
@@ -170,6 +171,76 @@ data class BillReceipt(
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
+
+enum class ReactionType(val wireValue: String, val emoji: String, val label: String) {
+    VERIFIED("verified", "✅", "Verified"),
+    CHECK("check", "👀", "Check"),
+    THANKS("thanks", "🙏", "Thanks"),
+    RECEIPT("receipt", "🧾", "Got it");
+
+    companion object {
+        fun fromWire(raw: String?): ReactionType =
+            entries.firstOrNull { it.wireValue.equals(raw, ignoreCase = true) } ?: VERIFIED
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
+data class BillComment(
+    @DocumentId val id: String = "",
+    val tripId: String = "",
+    val billId: String = "",
+    val userId: String = "",
+    val authorName: String = "",
+    val text: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class BillReaction(
+    @DocumentId val id: String = "",
+    val tripId: String = "",
+    val billId: String = "",
+    val userId: String = "",
+    val authorName: String = "",
+    val emoji: String = ReactionType.VERIFIED.wireValue,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun reactionType(): ReactionType = ReactionType.fromWire(emoji)
+}
+
+enum class DashboardFilterMode(val label: String) {
+    ALL("All"),
+    ACTIVE("Active"),
+    ARCHIVED("Archived"),
+    OWED("You're Owed"),
+    OWE("You Owe")
+}
+
+enum class DashboardSortOrder(val label: String) {
+    RECENT("Recent"),
+    HIGHEST_BALANCE("Top Balance"),
+    ALPHABETICAL("A–Z")
+}
+
+data class MultiDayTemplate(
+    val id: String,
+    val label: String,
+    val unitLabel: String,
+    val defaultCategory: BillCategory,
+    val suggestedRateCents: Long,
+    val defaultDays: Int
+) {
+    companion object {
+        val presets: List<MultiDayTemplate> = listOf(
+            MultiDayTemplate("stay", "Homestay / Villa", "nights", BillCategory.STAY, 350_000L, 2),
+            MultiDayTemplate("scooter", "Scooter / Bike Rent", "days", BillCategory.TRANSPORT, 50_000L, 3),
+            MultiDayTemplate("car", "Self-Drive Car", "days", BillCategory.TRANSPORT, 220_000L, 2),
+            MultiDayTemplate("pool", "Daily Chai & Snacks Pool", "days", BillCategory.FOOD, 40_000L, 3)
+        )
+    }
+}
 
 @Keep
 @IgnoreExtraProperties

@@ -10,10 +10,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,7 +34,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -44,11 +47,14 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
@@ -77,6 +83,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -94,13 +101,16 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.CURRENCY_SYMBOL_INR
+import com.example.data.model.DashboardFilterMode
+import com.example.data.model.DashboardSortOrder
 import com.example.data.model.SyncConnectionState
 import com.example.data.model.Trip
 import com.example.data.model.UiState
 import com.example.domain.CurrencyFormatter
 import com.example.domain.SharedExpenseDraft
 import com.example.ui.components.BilliMorphCard
-import com.example.ui.components.BilliStaggeredItem
+import com.example.ui.components.BilliPredictiveOverlay
+import com.example.ui.components.DashboardSkeleton
 import com.example.ui.components.LocalBilliFeedback
 import com.example.ui.components.LocalReduceMotion
 import com.example.ui.components.QrScannerScreen
@@ -109,8 +119,15 @@ import com.example.ui.components.SpotlightWalkthroughOverlay
 import com.example.ui.components.SyncStatusPill
 import com.example.ui.components.billiPressScale
 import com.example.ui.theme.MoneyBodyStyle
+import com.example.ui.theme.MoneyDisplayStyle
+import com.example.ui.theme.NegativeRust
+import com.example.ui.theme.NegativeRustBg
+import com.example.ui.theme.PositiveSage
+import com.example.ui.theme.PositiveSageBg
+import com.example.ui.viewmodel.DashboardOverviewMetrics
 import com.example.ui.viewmodel.DashboardViewModel
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -121,14 +138,16 @@ fun DashboardScreen(
     onCompleteWalkthrough: () -> Unit = {},
     pendingSharedDraft: SharedExpenseDraft? = null,
     onDismissSharedDraft: () -> Unit = {},
-    onOpenTripWithSharedDraft: (String, SharedExpenseDraft) -> Unit = { _, _ -> },
-    onOpenTrip: (String) -> Unit,
+    onOpenTripWithSharedDraft: (String, String, SharedExpenseDraft) -> Unit = { _, _, _ -> },
+    onOpenTrip: (String, String) -> Unit,
     onOpenAccount: () -> Unit
 ) {
     val context = LocalContext.current
     val feedback = LocalBilliFeedback.current
     val reduceMotion = LocalReduceMotion.current
     val tripsState by viewModel.tripsState.collectAsStateWithLifecycle()
+    val overviewMetrics by viewModel.overviewMetrics.collectAsStateWithLifecycle()
+    val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val actionBusy by viewModel.actionBusy.collectAsStateWithLifecycle()
 
@@ -160,30 +179,6 @@ fun DashboardScreen(
         viewModel.syncEvents.collect { msg ->
             snackbarHostState.showSnackbar(msg)
         }
-    }
-
-    if (showQrScanner) {
-        QrScannerScreen(
-            isBusy = actionBusy,
-            errorMessage = qrError,
-            onQrScanned = { raw ->
-                qrError = null
-                viewModel.joinTripFromQrPayload(
-                    rawPayload = raw,
-                    onSuccess = { tripId ->
-                        showQrScanner = false
-                        maybeRequestNotificationsOnTripEntry()
-                        onOpenTrip(tripId)
-                    },
-                    onError = { err -> qrError = err }
-                )
-            },
-            onClose = {
-                qrError = null
-                showQrScanner = false
-            }
-        )
-        return
     }
 
     val blurRadius = if (!reduceMotion && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && revealProgress < 0.99f) {
@@ -315,14 +310,16 @@ fun DashboardScreen(
             ) {
                 AnimatedContent(
                     targetState = tripsState,
-                    transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(180)) },
+                    contentKey = { it::class },
+                    transitionSpec = {
+                        val dur = if (reduceMotion) 80 else 220
+                        fadeIn(tween(dur)) togetherWith fadeOut(tween(dur / 2))
+                    },
                     label = "dashboard_state_anim"
                 ) { state ->
                     when (state) {
                         UiState.Loading -> {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                            }
+                            DashboardSkeleton()
                         }
                         is UiState.Error -> {
                             Column(
@@ -347,9 +344,6 @@ fun DashboardScreen(
                         }
                         is UiState.Success -> {
                             val trips = state.data
-                            val activeTrips = trips.filter { !it.isEnded() }
-                            val archivedTrips = trips.filter { it.isEnded() }
-
                             if (trips.isEmpty()) {
                                 EmptyDashboardState(
                                     onCreateTrip = {
@@ -363,6 +357,34 @@ fun DashboardScreen(
                                     }
                                 )
                             } else {
+                                val query = filterState.searchQuery.trim().lowercase()
+                                val filteredTrips = remember(trips, filterState, overviewMetrics) {
+                                    val base = trips.filter { trip ->
+                                        val matchesSearch = query.isEmpty() ||
+                                            trip.title.lowercase().contains(query) ||
+                                            trip.creatorName.lowercase().contains(query) ||
+                                            trip.members.any { it.displayName.lowercase().contains(query) }
+                                        val net = overviewMetrics.perTripNetCents[trip.id] ?: 0L
+                                        val matchesFilter = when (filterState.filterMode) {
+                                            DashboardFilterMode.ALL -> true
+                                            DashboardFilterMode.ACTIVE -> !trip.isEnded()
+                                            DashboardFilterMode.ARCHIVED -> trip.isEnded()
+                                            DashboardFilterMode.OWED -> !trip.isEnded() && net > 0L
+                                            DashboardFilterMode.OWE -> !trip.isEnded() && net < 0L
+                                        }
+                                        matchesSearch && matchesFilter
+                                    }
+                                    when (filterState.sortOrder) {
+                                        DashboardSortOrder.RECENT -> base
+                                        DashboardSortOrder.HIGHEST_BALANCE -> base.sortedByDescending {
+                                            abs(overviewMetrics.perTripNetCents[it.id] ?: 0L)
+                                        }
+                                        DashboardSortOrder.ALPHABETICAL -> base.sortedBy { it.title.lowercase() }
+                                    }
+                                }
+                                val activeTrips = filteredTrips.filter { !it.isEnded() }
+                                val archivedTrips = filteredTrips.filter { it.isEnded() }
+
                                 LazyColumn(
                                     modifier = Modifier
                                         .fillMaxSize()
@@ -375,52 +397,162 @@ fun DashboardScreen(
                                     ),
                                     verticalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    item(key = "qr_banner") {
-                                        BilliStaggeredItem(index = 0) {
-                                            BilliMorphCard(
-                                                shape = RoundedCornerShape(18.dp),
-                                                onClick = {
-                                                    feedback?.tick()
-                                                    qrError = null
-                                                    showQrScanner = true
-                                                },
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .testTag("join_trip_qr_banner")
+                                    // 1. Live Overall Net-Balance Summary Card across Active Trips
+                                    item(key = "overall_net_summary") {
+                                        OverallNetBalanceHeroCard(metrics = overviewMetrics)
+                                    }
+
+                                    // 2. Search Bar + Filter Chips + Sort Control
+                                    item(key = "dashboard_search_filters") {
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Row(
-                                                    modifier = Modifier.padding(14.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
+                                                OutlinedTextField(
+                                                    value = filterState.searchQuery,
+                                                    onValueChange = { viewModel.updateSearchQuery(it) },
+                                                    placeholder = { Text("Search trips or friends...") },
+                                                    leadingIcon = {
+                                                        Icon(Icons.Rounded.Search, contentDescription = null)
+                                                    },
+                                                    trailingIcon = {
+                                                        if (filterState.searchQuery.isNotEmpty()) {
+                                                            IconButton(onClick = { viewModel.updateSearchQuery("") }) {
+                                                                Icon(Icons.Rounded.Close, contentDescription = "Clear search")
+                                                            }
+                                                        }
+                                                    },
+                                                    singleLine = true,
+                                                    shape = RoundedCornerShape(16.dp),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .testTag("dashboard_search_input")
+                                                )
+                                                Surface(
+                                                    shape = RoundedCornerShape(16.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                                    modifier = Modifier
+                                                        .height(54.dp)
+                                                        .billiPressScale()
+                                                        .clickable {
+                                                            feedback?.tick()
+                                                            viewModel.cycleSortOrder()
+                                                        }
+                                                        .testTag("dashboard_sort_button")
                                                 ) {
-                                                    Surface(
-                                                        shape = RoundedCornerShape(12.dp),
-                                                        color = MaterialTheme.colorScheme.secondaryContainer,
-                                                        modifier = Modifier.size(42.dp)
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 12.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                                                     ) {
                                                         Icon(
-                                                            imageVector = Icons.Rounded.QrCodeScanner,
-                                                            contentDescription = null,
-                                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                            modifier = Modifier.padding(9.dp)
-                                                        )
-                                                    }
-                                                    Spacer(Modifier.width(12.dp))
-                                                    Column(modifier = Modifier.weight(1f)) {
-                                                        Text(
-                                                            text = "Joining a friend's trip?",
-                                                            style = MaterialTheme.typography.titleSmall
+                                                            imageVector = Icons.Rounded.SwapVert,
+                                                            contentDescription = "Sort trips",
+                                                            tint = MaterialTheme.colorScheme.primary,
+                                                            modifier = Modifier.size(18.dp)
                                                         )
                                                         Text(
-                                                            text = "Scan their Billi QR code to sync bills live",
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            text = filterState.sortOrder.label,
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            color = MaterialTheme.colorScheme.onSurface
                                                         )
                                                     }
-                                                    Icon(
-                                                        imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                                                        contentDescription = null,
-                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                }
+                                            }
+
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .horizontalScroll(rememberScrollState()),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                DashboardFilterMode.entries.forEach { mode ->
+                                                    FilterChip(
+                                                        selected = filterState.filterMode == mode,
+                                                        onClick = {
+                                                            feedback?.tick()
+                                                            viewModel.setFilterMode(mode)
+                                                        },
+                                                        label = { Text(mode.label) },
+                                                        modifier = Modifier.testTag("dashboard_filter_${mode.name.lowercase()}")
                                                     )
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    item(key = "qr_banner") {
+                                        BilliMorphCard(
+                                            shape = RoundedCornerShape(18.dp),
+                                            onClick = {
+                                                feedback?.tick()
+                                                qrError = null
+                                                showQrScanner = true
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("join_trip_qr_banner")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(14.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                                    modifier = Modifier.size(42.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.QrCodeScanner,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                        modifier = Modifier.padding(9.dp)
+                                                    )
+                                                }
+                                                Spacer(Modifier.width(12.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = "Joining a friend's trip?",
+                                                        style = MaterialTheme.typography.titleSmall
+                                                    )
+                                                    Text(
+                                                        text = "Scan their Billi QR code to sync bills live",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                Icon(
+                                                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (filteredTrips.isEmpty()) {
+                                        item(key = "filtered_empty") {
+                                            Surface(
+                                                shape = RoundedCornerShape(18.dp),
+                                                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(20.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally
+                                                ) {
+                                                    Text(
+                                                        text = "No trips match your filter",
+                                                        style = MaterialTheme.typography.titleMedium
+                                                    )
+                                                    Spacer(Modifier.height(4.dp))
+                                                    TextButton(onClick = { viewModel.clearFilters() }) {
+                                                        Text("Reset search & filters")
+                                                    }
                                                 }
                                             }
                                         }
@@ -435,17 +567,17 @@ fun DashboardScreen(
                                                 modifier = Modifier.padding(top = 6.dp, start = 4.dp)
                                             )
                                         }
-                                        itemsIndexed(activeTrips, key = { _, it -> it.id }) { idx, trip ->
-                                            BilliStaggeredItem(index = idx + 1) {
-                                                TripListCard(
-                                                    trip = trip,
-                                                    currentUserId = viewModel.currentUserId,
-                                                    onClick = {
-                                                        feedback?.tick()
-                                                        onOpenTrip(trip.id)
-                                                    }
-                                                )
-                                            }
+                                        items(activeTrips, key = { it.id }) { trip ->
+                                            TripListCard(
+                                                trip = trip,
+                                                currentUserId = viewModel.currentUserId,
+                                                netBalanceCents = overviewMetrics.perTripNetCents[trip.id],
+                                                totalSpendCents = overviewMetrics.perTripTotalSpendCents[trip.id] ?: 0L,
+                                                onClick = {
+                                                    feedback?.tick()
+                                                    onOpenTrip(trip.id, trip.title)
+                                                }
+                                            )
                                         }
                                     }
 
@@ -458,17 +590,17 @@ fun DashboardScreen(
                                                 modifier = Modifier.padding(top = 12.dp, start = 4.dp)
                                             )
                                         }
-                                        itemsIndexed(archivedTrips, key = { _, it -> it.id }) { idx, trip ->
-                                            BilliStaggeredItem(index = idx + activeTrips.size + 1) {
-                                                TripListCard(
-                                                    trip = trip,
-                                                    currentUserId = viewModel.currentUserId,
-                                                    onClick = {
-                                                        feedback?.tick()
-                                                        onOpenTrip(trip.id)
-                                                    }
-                                                )
-                                            }
+                                        items(archivedTrips, key = { it.id }) { trip ->
+                                            TripListCard(
+                                                trip = trip,
+                                                currentUserId = viewModel.currentUserId,
+                                                netBalanceCents = null,
+                                                totalSpendCents = 0L,
+                                                onClick = {
+                                                    feedback?.tick()
+                                                    onOpenTrip(trip.id, trip.title)
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -482,6 +614,36 @@ fun DashboardScreen(
         // 2-Step Interactive First-Time Walkthrough Spotlight Coachmark
         if (showOnboardingWalkthrough && revealProgress >= 0.98f) {
             SpotlightWalkthroughOverlay(onComplete = onCompleteWalkthrough)
+        }
+
+        // Smooth Predictive Back Animated QR Scanner Overlay (preserves Dashboard scroll state)
+        BilliPredictiveOverlay(
+            visible = showQrScanner,
+            onDismiss = {
+                qrError = null
+                showQrScanner = false
+            }
+        ) {
+            QrScannerScreen(
+                isBusy = actionBusy,
+                errorMessage = qrError,
+                onQrScanned = { raw ->
+                    qrError = null
+                    viewModel.joinTripFromQrPayload(
+                        rawPayload = raw,
+                        onSuccess = { tripId ->
+                            showQrScanner = false
+                            maybeRequestNotificationsOnTripEntry()
+                            onOpenTrip(tripId, "Trip Ledger")
+                        },
+                        onError = { err -> qrError = err }
+                    )
+                },
+                onClose = {
+                    qrError = null
+                    showQrScanner = false
+                }
+            )
         }
     }
 
@@ -573,7 +735,7 @@ fun DashboardScreen(
                         BilliMorphCard(
                             onClick = {
                                 feedback?.celebrateDoublePulse()
-                                onOpenTripWithSharedDraft(trip.id, pendingSharedDraft)
+                                onOpenTripWithSharedDraft(trip.id, trip.title, pendingSharedDraft)
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -613,10 +775,10 @@ fun DashboardScreen(
                     title = title,
                     budgetCents = budgetCents,
                     otherMemberNames = members,
-                    onSuccess = { tripId ->
+                    onSuccess = { tripId, tripTitle ->
                         showCreateTripDialog = false
                         maybeRequestNotificationsOnTripEntry()
-                        onOpenTrip(tripId)
+                        onOpenTrip(tripId, tripTitle)
                     },
                     onError = { msg ->
                         scope.launch { snackbarHostState.showSnackbar(msg) }
@@ -628,9 +790,137 @@ fun DashboardScreen(
 }
 
 @Composable
+private fun OverallNetBalanceHeroCard(metrics: DashboardOverviewMetrics) {
+    val net = metrics.overallNetCents
+    val headline = when {
+        metrics.activeTripCount == 0 -> "No active trips"
+        net > 0L -> "Overall, you are owed"
+        net < 0L -> "Overall, you owe"
+        else -> "All active trips settled"
+    }
+    val accentColor = when {
+        net > 0L -> PositiveSage
+        net < 0L -> NegativeRust
+        else -> MaterialTheme.colorScheme.primary
+    }
+    val pillBg = when {
+        net > 0L -> PositiveSageBg
+        net < 0L -> NegativeRustBg
+        else -> MaterialTheme.colorScheme.primaryContainer
+    }
+
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        tonalElevation = 1.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("dashboard_net_balance_card")
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            pillBg.copy(alpha = 0.28f),
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        )
+                    )
+                )
+                .padding(18.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = headline,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        Text(
+                            text = "${metrics.activeTripCount} active",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                Text(
+                    text = CurrencyFormatter.format(abs(net)),
+                    style = MoneyDisplayStyle,
+                    color = accentColor
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = PositiveSageBg.copy(alpha = 0.55f),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Owed to you",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = PositiveSage
+                            )
+                            Text(
+                                text = CurrencyFormatter.formatCompact(metrics.totalOwedToYouCents),
+                                style = MoneyBodyStyle.copy(fontWeight = FontWeight.Bold),
+                                color = PositiveSage
+                            )
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = NegativeRustBg.copy(alpha = 0.55f),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "You owe",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NegativeRust
+                            )
+                            Text(
+                                text = CurrencyFormatter.formatCompact(metrics.totalYouOweCents),
+                                style = MoneyBodyStyle.copy(fontWeight = FontWeight.Bold),
+                                color = NegativeRust
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun TripListCard(
     trip: Trip,
     currentUserId: String,
+    netBalanceCents: Long?,
+    totalSpendCents: Long,
     onClick: () -> Unit
 ) {
     BilliMorphCard(
@@ -650,20 +940,53 @@ private fun TripListCard(
                     isCoHost = trip.isCoHost(currentUserId),
                     isEnded = trip.isEnded()
                 )
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (trip.budgetCents > 0L) {
-                            "Budget ${CurrencyFormatter.formatCompact(trip.budgetCents)}"
-                        } else {
-                            "₹ INR"
-                        },
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
+                    if (netBalanceCents != null && !trip.isEnded()) {
+                        val chipBg = when {
+                            netBalanceCents > 0L -> PositiveSageBg
+                            netBalanceCents < 0L -> NegativeRustBg
+                            else -> MaterialTheme.colorScheme.surfaceVariant
+                        }
+                        val chipFg = when {
+                            netBalanceCents > 0L -> PositiveSage
+                            netBalanceCents < 0L -> NegativeRust
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                        val label = when {
+                            netBalanceCents > 0L -> "+${CurrencyFormatter.formatCompact(netBalanceCents)}"
+                            netBalanceCents < 0L -> "-${CurrencyFormatter.formatCompact(abs(netBalanceCents))}"
+                            else -> "Settled"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = chipBg
+                        ) {
+                            Text(
+                                text = label,
+                                style = MoneyBodyStyle.copy(fontWeight = FontWeight.Bold),
+                                color = chipFg,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = when {
+                                totalSpendCents > 0L -> "Spent ${CurrencyFormatter.formatCompact(totalSpendCents)}"
+                                trip.budgetCents > 0L -> "Budget ${CurrencyFormatter.formatCompact(trip.budgetCents)}"
+                                else -> "₹ INR"
+                            },
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
                 }
             }
 
