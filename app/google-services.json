@@ -51,6 +51,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "547649321712-ir58i8ujjbs2qk1r336q9kbne22pcbff.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.isuh.billi",
+            "certificate_hash": "03c27c2f2fd0456f9b2893b89a426a811475f532"
+          }
+        },
+        {
           "client_id": "547649321712-odj7i91c60j5fk1talvhh2vnkfbg2ree.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
