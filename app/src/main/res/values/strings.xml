@@ -31,4 +31,5 @@
     <string name="tab_members">Members</string>
     <string name="widget_description">Shows your live INR Billi trip balance with one-tap Quick Add.</string>
     <string name="developer_credit">Crafted by isuh • com.isuh.billi</string>
+    <string name="default_web_client_id">547649321712-g6tt7aejg0pccpe08e7ihngfknl4annh.apps.googleusercontent.com</string>
 </resources>
