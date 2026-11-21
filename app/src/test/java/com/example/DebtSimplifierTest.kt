@@ -318,11 +318,63 @@ class DebtSimplifierTest {
     }
 
     @Test
-    fun githubReleaseUpdater_comparesSemverCorrectly() {
+    fun githubReleaseUpdater_comparesSemverAndVersionCodeCorrectly() {
         assertTrue(GitHubReleaseUpdater.isVersionNewer("1.2.0", "1.1.9"))
+        assertTrue(GitHubReleaseUpdater.isVersionNewer("1.0.10", "1.0.9"))
         assertTrue(GitHubReleaseUpdater.isVersionNewer("2.0", "1.9.9"))
         assertFalse(GitHubReleaseUpdater.isVersionNewer("1.0.0", "1.0.0"))
         assertFalse(GitHubReleaseUpdater.isVersionNewer("1.0.0", "1.1.0"))
+
+        assertTrue(
+            GitHubReleaseUpdater.isReleaseNewer(
+                remoteVersion = "1.0.2",
+                remoteVersionCode = 2,
+                currentVersion = "1.0.1",
+                currentVersionCode = 1
+            )
+        )
+        assertFalse(
+            GitHubReleaseUpdater.isReleaseNewer(
+                remoteVersion = "1.0.5",
+                remoteVersionCode = 5,
+                currentVersion = "1.0.5",
+                currentVersionCode = 5
+            )
+        )
+        assertEquals(
+            14,
+            GitHubReleaseUpdater.extractVersionCode("1.0.14", "Automated release\n- Version code: 14")
+        )
+    }
+
+    @Test
+    fun githubReleaseUpdater_validatesTrustedHostsAndSanitizesApkFilename() {
+        assertTrue(GitHubReleaseUpdater.isTrustedAssetDownloadHost("https://objects.githubusercontent.com/github-production-release-asset/foo.apk"))
+        assertTrue(GitHubReleaseUpdater.isTrustedAssetDownloadHost("https://github.com/sumeethibare/billi/releases/download/v1.0.2/Billi-v1.0.2.apk"))
+        assertFalse(GitHubReleaseUpdater.isTrustedAssetDownloadHost("http://objects.githubusercontent.com/foo.apk"))
+        assertFalse(GitHubReleaseUpdater.isTrustedAssetDownloadHost("https://attacker.tld/Billi.apk"))
+
+        assertEquals("Billi-v1.0.7.apk", GitHubReleaseUpdater.sanitizeApkFileName("../../Billi-v1.0.7.apk"))
+        assertEquals("evil_name.apk", GitHubReleaseUpdater.sanitizeApkFileName("foo/bar/evil name"))
+    }
+
+    @Test
+    fun githubReleaseUpdater_extractsAndVerifiesSha256Checksum() {
+        val samplePayload = "Billi signed APK test payload".toByteArray(Charsets.UTF_8)
+        val expectedDigest = GitHubReleaseUpdater.computeSha256Hex(samplePayload)
+        assertEquals(64, expectedDigest.length)
+
+        val releaseBody = """
+            Automated Billi Android release.
+            - Version: 1.0.9 (code 9)
+            - SHA-256: `$expectedDigest`
+        """.trimIndent()
+
+        val extracted = GitHubReleaseUpdater.extractExpectedSha256(releaseBody)
+        assertEquals(expectedDigest, extracted)
+        assertTrue(GitHubReleaseUpdater.verifySha256(expectedDigest, expectedDigest.uppercase()))
+        assertFalse(GitHubReleaseUpdater.verifySha256(expectedDigest, "0".repeat(64)))
+        assertFalse(GitHubReleaseUpdater.verifySha256(expectedDigest, "short"))
     }
 
     @Test

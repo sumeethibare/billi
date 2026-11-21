@@ -136,6 +136,7 @@ fun DashboardScreen(
     revealProgress: Float = 1f,
     showOnboardingWalkthrough: Boolean = false,
     onCompleteWalkthrough: () -> Unit = {},
+    hasAvailableUpdate: Boolean = false,
     pendingSharedDraft: SharedExpenseDraft? = null,
     onDismissSharedDraft: () -> Unit = {},
     onOpenTripWithSharedDraft: (String, String, SharedExpenseDraft) -> Unit = { _, _, _ -> },
@@ -252,34 +253,57 @@ fun DashboardScreen(
                         Box(
                             modifier = Modifier
                                 .padding(end = 10.dp)
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer)
-                                .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f), CircleShape)
-                                .billiPressScale(0.92f)
-                                .clickable {
-                                    feedback?.tick()
-                                    onOpenAccount()
-                                }
-                                .semantics { contentDescription = "Open Account and App Settings" }
-                                .testTag("dashboard_account_button"),
+                                .size(42.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (!viewModel.currentUserPhotoUrl.isNullOrBlank()) {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(LocalContext.current)
-                                        .data(viewModel.currentUserPhotoUrl)
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = "Account",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            } else {
-                                Text(
-                                    text = viewModel.currentUserName.firstOrNull()?.uppercase() ?: "B",
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primaryContainer)
+                                    .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f), CircleShape)
+                                    .billiPressScale(0.92f)
+                                    .clickable {
+                                        feedback?.tick()
+                                        onOpenAccount()
+                                    }
+                                    .semantics {
+                                        contentDescription = if (hasAvailableUpdate) {
+                                            "Open Account and App Settings — App update available"
+                                        } else {
+                                            "Open Account and App Settings"
+                                        }
+                                    }
+                                    .testTag("dashboard_account_button"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (!viewModel.currentUserPhotoUrl.isNullOrBlank()) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(LocalContext.current)
+                                            .data(viewModel.currentUserPhotoUrl)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = "Account",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Text(
+                                        text = viewModel.currentUserName.firstOrNull()?.uppercase() ?: "B",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+                            if (hasAvailableUpdate) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(12.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.error)
+                                        .border(2.dp, MaterialTheme.colorScheme.background, CircleShape)
+                                        .testTag("dashboard_update_badge_dot")
                                 )
                             }
                         }

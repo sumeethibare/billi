@@ -16,11 +16,19 @@ android {
     applicationId = "com.isuh.billi"
     minSdk = 24
     targetSdk = 36
-    // GitHub Actions supplies a unique version code for each automated release.
-    // Local builds fall back to versionCode 1.
-    val releaseVersionCode = providers.environmentVariable("VERSION_CODE").orElse("1").get().toInt()
+    // GitHub Actions supplies monotonic VERSION_CODE and matching VERSION_NAME for each release.
+    // Local builds fall back to versionCode 1 / versionName "1.0.1".
+    val releaseVersionCode = providers.environmentVariable("VERSION_CODE")
+      .map { it.trim().toIntOrNull()?.coerceAtLeast(1) ?: 1 }
+      .orElse(1)
+      .get()
+    val releaseVersionName = providers.environmentVariable("VERSION_NAME")
+      .map { it.trim().removePrefix("v").removePrefix("V") }
+      .orElse("1.0.$releaseVersionCode")
+      .get()
+      .ifBlank { "1.0.$releaseVersionCode" }
     versionCode = releaseVersionCode
-    versionName = "1.0.$releaseVersionCode"
+    versionName = releaseVersionName
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

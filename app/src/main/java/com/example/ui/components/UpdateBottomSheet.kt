@@ -2,6 +2,8 @@ package com.example.ui.components
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.rounded.InstallMobile
 import androidx.compose.material.icons.rounded.NewReleases
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -41,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,6 +78,23 @@ fun UpdateBottomSheet(
     val feedback = LocalBilliFeedback.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var needsInstallPermissionHint by remember { mutableStateOf(false) }
+    var pendingInstallFile by remember { mutableStateOf<java.io.File?>(null) }
+
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        val apkFile = pendingInstallFile
+        if (apkFile != null && GitHubReleaseUpdater.canRequestPackageInstalls(context)) {
+            needsInstallPermissionHint = false
+            pendingInstallFile = null
+            feedback?.celebrateDoublePulse()
+            runCatching {
+                context.startActivity(
+                    GitHubReleaseUpdater.createInstallApkIntent(context, apkFile)
+                )
+            }
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -209,7 +230,7 @@ fun UpdateBottomSheet(
                             ) {
                                 Text(if (release.isNewerThanCurrent) "Later" else "Close")
                             }
-                            if (release.apkDownloadUrl != null && release.isNewerThanCurrent) {
+                            if (release.canDownloadInApp && release.isNewerThanCurrent) {
                                 Button(
                                     onClick = {
                                         feedback?.tick()
@@ -294,19 +315,53 @@ fun UpdateBottomSheet(
                     }
 
                     is AppUpdateDownloadState.ReadyToInstall -> {
+                        LaunchedEffect(state.apkFile.absolutePath, state.checksumVerified) {
+                            if (state.checksumVerified) {
+                                feedback?.celebrateDoublePulse()
+                            }
+                        }
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (state.checksumVerified) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("update_sha256_verified_badge")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.VerifiedUser,
+                                            contentDescription = "SHA-256 checksum verified",
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "SHA-256 checksum verified — ready to install",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                    }
+                                }
+                            }
                             Button(
                                 onClick = {
                                     feedback?.celebrateDoublePulse()
                                     if (!GitHubReleaseUpdater.canRequestPackageInstalls(context)) {
                                         needsInstallPermissionHint = true
+                                        pendingInstallFile = state.apkFile
                                         runCatching {
-                                            context.startActivity(
+                                            installPermissionLauncher.launch(
                                                 GitHubReleaseUpdater.createUnknownSourcesSettingsIntent(context)
                                             )
                                         }
                                     } else {
                                         needsInstallPermissionHint = false
+                                        pendingInstallFile = null
                                         runCatching {
                                             context.startActivity(
                                                 GitHubReleaseUpdater.createInstallApkIntent(context, state.apkFile)
@@ -376,7 +431,7 @@ private fun ReleaseNotesMarkdownView(markdown: String) {
                     )
                 }
                 rawLine.startsWith("- ") || rawLine.startsWith("* ") -> {
-                    val clean = rawLine.drop(2).replace("**", "").replace("`", "")
+                    val clean = compactHashDisplay(rawLine.drop(2).replace("**", "").replace("`", ""))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = "•",
@@ -392,12 +447,21 @@ private fun ReleaseNotesMarkdownView(markdown: String) {
                 }
                 else -> {
                     Text(
-                        text = rawLine.replace("**", "").replace("`", ""),
+                        text = compactHashDisplay(rawLine.replace("**", "").replace("`", "")),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         }
+    }
+}
+
+private val LongHexTokenRegex = Regex("""\b([0-9a-fA-F]{40,64})\b""")
+
+private fun compactHashDisplay(line: String): String {
+    return LongHexTokenRegex.replace(line) { match ->
+        val hex = match.value
+        if (hex.length >= 24) "${hex.take(12)}…${hex.takeLast(8)}" else hex
     }
 }

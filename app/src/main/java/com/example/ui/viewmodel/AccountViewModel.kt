@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -27,6 +28,14 @@ class AccountViewModel(
             initialValue = AppPreferences()
         )
 
+    val cachedAvailableUpdate: StateFlow<GitHubReleaseInfo?> = preferencesRepository.preferencesFlow
+        .map { prefs -> GitHubReleaseUpdater.parseCachedAvailableUpdate(prefs) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000L),
+            initialValue = null
+        )
+
     private val _checkingUpdate = MutableStateFlow(false)
     val checkingUpdate: StateFlow<Boolean> = _checkingUpdate.asStateFlow()
 
@@ -38,6 +47,12 @@ class AccountViewModel(
 
     private val _updateStatusMessage = MutableStateFlow<String?>(null)
     val updateStatusMessage: StateFlow<String?> = _updateStatusMessage.asStateFlow()
+
+    fun openCachedUpdateSheet() {
+        val cached = cachedAvailableUpdate.value ?: return
+        _downloadState.value = AppUpdateDownloadState.Idle
+        _updateReleaseInfo.value = cached
+    }
 
     fun setThemeMode(mode: AppThemeMode) {
         viewModelScope.launch { preferencesRepository.setThemeMode(mode) }
@@ -109,8 +124,11 @@ class AccountViewModel(
                     _downloadState.value = progressState
                 }
             )
-            result.onSuccess { file ->
-                _downloadState.value = AppUpdateDownloadState.ReadyToInstall(file)
+            result.onSuccess { downloaded ->
+                _downloadState.value = AppUpdateDownloadState.ReadyToInstall(
+                    apkFile = downloaded.file,
+                    checksumVerified = downloaded.checksumVerified
+                )
             }.onFailure { err ->
                 _downloadState.value = AppUpdateDownloadState.Error(
                     err.localizedMessage ?: "Failed to download APK."

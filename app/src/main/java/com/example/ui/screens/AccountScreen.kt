@@ -90,6 +90,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.BuildConfig
 import com.example.data.preferences.AppThemeMode
+import com.example.domain.GitHubReleaseUpdater
 import com.example.service.TripBubbleService
 import com.example.ui.components.BilliMorphCard
 import com.example.ui.components.BilliStaggeredItem
@@ -117,6 +118,7 @@ fun AccountScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
+    val cachedAvailableUpdate by viewModel.cachedAvailableUpdate.collectAsStateWithLifecycle()
     val checkingUpdate by viewModel.checkingUpdate.collectAsStateWithLifecycle()
     val updateRelease by viewModel.updateReleaseInfo.collectAsStateWithLifecycle()
     val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
@@ -487,7 +489,15 @@ fun AccountScreen(
 
                 // --- 5. IN-APP UPDATES (GITHUB RELEASES) & WALKTHROUGH ---
                 BilliStaggeredItem(index = 4) {
-                    BilliMorphCard(modifier = Modifier.fillMaxWidth()) {
+                    val available = cachedAvailableUpdate
+                    BilliMorphCard(
+                        borderColor = if (available != null) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                        } else {
+                            MaterialTheme.colorScheme.outlineVariant
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Column(
                             modifier = Modifier.padding(18.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -495,24 +505,69 @@ fun AccountScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    color = if (available != null) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    },
                                     modifier = Modifier.size(40.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.SystemUpdate,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        tint = if (available != null) {
+                                            MaterialTheme.colorScheme.onPrimary
+                                        } else {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        },
                                         modifier = Modifier.padding(9.dp)
                                     )
                                 }
                                 Spacer(Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("Billi App Updates", style = MaterialTheme.typography.titleSmall)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text("Billi App Updates", style = MaterialTheme.typography.titleSmall)
+                                        if (available != null) {
+                                            Surface(
+                                                shape = RoundedCornerShape(50),
+                                                color = MaterialTheme.colorScheme.primaryContainer,
+                                                modifier = Modifier.testTag("settings_update_ready_badge")
+                                            ) {
+                                                Text(
+                                                    text = "Update ${available.tagName}",
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                     Text(
-                                        text = "v${BuildConfig.VERSION_NAME} • com.isuh.billi • Built by isuh",
+                                        text = "v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) • com.isuh.billi",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                }
+                            }
+
+                            if (available != null) {
+                                Button(
+                                    onClick = {
+                                        feedback?.celebrateDoublePulse()
+                                        viewModel.openCachedUpdateSheet()
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .billiPressScale()
+                                        .testTag("settings_install_available_update_button")
+                                ) {
+                                    Icon(Icons.Rounded.SystemUpdate, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Install ${available.tagName} (${GitHubReleaseUpdater.formatFileSize(available.apkSizeBytes)})")
                                 }
                             }
 

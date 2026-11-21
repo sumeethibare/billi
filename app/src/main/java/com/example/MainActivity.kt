@@ -15,6 +15,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -22,7 +23,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.credentials.CredentialManager
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -190,17 +193,40 @@ private fun BilliAuthenticatedNav(
     var pendingSharedDraft by remember { mutableStateOf<SharedExpenseDraft?>(null) }
     var tripQuickAddDraft by remember { mutableStateOf<Pair<String, SharedExpenseDraft?>?>(null) }
 
-    // Silent 12-hour throttled GitHub Releases check on startup
+    // Every-launch & resume GitHub Releases check using ETag conditional caching (304 = 0 rate limit)
     var startupUpdateRelease by remember { mutableStateOf<GitHubReleaseInfo?>(null) }
     var startupDownloadState by remember { mutableStateOf<AppUpdateDownloadState>(AppUpdateDownloadState.Idle) }
+    var dismissedSessionTag by remember { mutableStateOf<String?>(null) }
+    var lastForegroundCheckMs by remember { mutableLongStateOf(0L) }
+
+    val cachedAvailableUpdate = remember(prefs.cachedReleaseJson) {
+        GitHubReleaseUpdater.parseCachedAvailableUpdate(prefs)
+    }
+    val hasAvailableUpdate = startupUpdateRelease != null || cachedAvailableUpdate != null
+
+    fun triggerSilentReleaseCheck() {
+        val now = System.currentTimeMillis()
+        // Debounce rapid foreground resumes to 60 seconds; cold launch always runs immediately
+        if (lastForegroundCheckMs > 0L && (now - lastForegroundCheckMs) < 60_000L) return
+        lastForegroundCheckMs = now
+        scope.launch {
+            GitHubReleaseUpdater.checkForUpdate(preferencesRepository, force = false)
+                .onSuccess { info ->
+                    if (info != null && info.isNewerThanCurrent && info.canDownloadInApp) {
+                        if (dismissedSessionTag != info.tagName) {
+                            startupUpdateRelease = info
+                        }
+                    }
+                }
+        }
+    }
 
     LaunchedEffect(Unit) {
-        GitHubReleaseUpdater.checkForUpdate(preferencesRepository, force = false)
-            .onSuccess { info ->
-                if (info != null && info.isNewerThanCurrent) {
-                    startupUpdateRelease = info
-                }
-            }
+        triggerSilentReleaseCheck()
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        triggerSilentReleaseCheck()
     }
 
     // Parse incoming Share-to-Split (ACTION_SEND) or Glance Widget deep-link intents
@@ -273,6 +299,7 @@ private fun BilliAuthenticatedNav(
                         onCompleteWalkthrough = {
                             scope.launch { preferencesRepository.setHasSeenOnboardingWalkthrough(true) }
                         },
+                        hasAvailableUpdate = hasAvailableUpdate,
                         pendingSharedDraft = pendingSharedDraft,
                         onDismissSharedDraft = { pendingSharedDraft = null },
                         onOpenTripWithSharedDraft = { tripId, tripTitle, draft ->
@@ -400,8 +427,11 @@ private fun BilliAuthenticatedNav(
                         context = context.applicationContext,
                         release = release,
                         onProgress = { startupDownloadState = it }
-                    ).onSuccess { file ->
-                        startupDownloadState = AppUpdateDownloadState.ReadyToInstall(file)
+                    ).onSuccess { downloaded ->
+                        startupDownloadState = AppUpdateDownloadState.ReadyToInstall(
+                            apkFile = downloaded.file,
+                            checksumVerified = downloaded.checksumVerified
+                        )
                     }.onFailure { err ->
                         startupDownloadState = AppUpdateDownloadState.Error(
                             err.localizedMessage ?: "Download failed."
@@ -410,6 +440,7 @@ private fun BilliAuthenticatedNav(
                 }
             },
             onDismiss = {
+                dismissedSessionTag = release.tagName
                 startupUpdateRelease = null
                 startupDownloadState = AppUpdateDownloadState.Idle
             }

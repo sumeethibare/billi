@@ -3,12 +3,22 @@ name: Android APK & Release
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+# Queue pushes on the same branch so version tags and "latest" release never race
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -23,10 +33,35 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Ensure Android SDK licenses & platform
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          if [ -n "$SDK_ROOT" ] && [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "platforms;android-36.1" >/dev/null || true
+          fi
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+
+      - name: Compute release version
+        id: version
+        run: |
+          CODE="${{ github.run_number }}"
+          NAME="1.0.${CODE}"
+          echo "code=${CODE}" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NAME}" >> "$GITHUB_OUTPUT"
+          echo "apk_name=Billi-v${NAME}.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Restore debug keystore for pull request builds
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
+            base64 --decode debug.keystore.base64 > debug.keystore
+          fi
 
       - name: Restore Android signing key
         if: github.event_name != 'pull_request'
@@ -42,28 +77,41 @@ jobs:
         env:
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          VERSION_CODE: ${{ github.run_number }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
         run: gradle --no-daemon assembleRelease
 
       - name: Build debug APK for pull requests
         if: github.event_name == 'pull_request'
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
         run: gradle --no-daemon assembleDebug
 
-      - name: Rename release APK
+      - name: Verify, checksum & stage release APK
+        id: stage
         if: github.event_name != 'pull_request'
         env:
-          VERSION_CODE: ${{ github.run_number }}
+          APK_NAME: ${{ steps.version.outputs.apk_name }}
         run: |
+          APK_SRC="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK_SRC" || { echo "Expected signed release APK not found at $APK_SRC"; exit 1; }
           mkdir -p release-assets
-          cp app/build/outputs/apk/release/app-release.apk "release-assets/Billi-v1.0.${VERSION_CODE}.apk"
+          cp "$APK_SRC" "release-assets/${APK_NAME}"
+          SHA256="$(sha256sum "release-assets/${APK_NAME}" | awk '{print $1}')"
+          printf '%s  %s\n' "$SHA256" "${APK_NAME}" > "release-assets/${APK_NAME}.sha256"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+          ls -lh "release-assets/${APK_NAME}"
+          cat "release-assets/${APK_NAME}.sha256"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: billi-apk-${{ github.run_number }}
+          name: billi-apk-${{ steps.version.outputs.code }}
           path: |
             app/build/outputs/apk/debug/**/*.apk
             release-assets/*.apk
+            release-assets/*.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -71,15 +119,18 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: Billi v1.0.${{ github.run_number }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Billi ${{ steps.version.outputs.tag }}
           body: |
             Automated Billi Android release.
 
-            - Built from commit: ${{ github.sha }}
-            - Version code: ${{ github.run_number }}
+            - Version: ${{ steps.version.outputs.name }} (code ${{ steps.version.outputs.code }})
+            - Commit: ${{ github.sha }}
+            - SHA-256: `${{ steps.stage.outputs.sha256 }}`
 
-            Download the APK below and install it on your Android device.
-          files: release-assets/*.apk
+            Install directly inside Billi via **Account & Settings → Check Updates**, or download the signed APK below.
+          files: |
+            release-assets/${{ steps.version.outputs.apk_name }}
+            release-assets/${{ steps.version.outputs.apk_name }}.sha256
           generate_release_notes: true
           make_latest: true

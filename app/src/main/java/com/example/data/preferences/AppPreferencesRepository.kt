@@ -49,6 +49,8 @@ data class AppPreferences(
     val tripBubbleEnabled: Boolean = false,
     val hasSeenOnboardingWalkthrough: Boolean = false,
     val lastUpdateCheckMillis: Long = 0L,
+    val cachedReleaseEtag: String = "",
+    val cachedReleaseJson: String = "",
     val lastUsedSplitMode: String = "equal",
     val widgetSnapshot: WidgetSnapshot = WidgetSnapshot()
 )
@@ -67,6 +69,8 @@ class AppPreferencesRepository(context: Context) {
         val TRIP_BUBBLE_ENABLED = booleanPreferencesKey("trip_bubble_enabled")
         val HAS_SEEN_WALKTHROUGH = booleanPreferencesKey("has_seen_walkthrough")
         val LAST_UPDATE_CHECK_MILLIS = longPreferencesKey("last_update_check_millis")
+        val CACHED_RELEASE_ETAG = stringPreferencesKey("cached_release_etag")
+        val CACHED_RELEASE_JSON = stringPreferencesKey("cached_release_json")
         val LAST_USED_SPLIT_MODE = stringPreferencesKey("last_used_split_mode")
 
         // Glance Widget & Floating Bubble shared snapshot
@@ -97,6 +101,8 @@ class AppPreferencesRepository(context: Context) {
                 tripBubbleEnabled = prefs[Keys.TRIP_BUBBLE_ENABLED] ?: false,
                 hasSeenOnboardingWalkthrough = prefs[Keys.HAS_SEEN_WALKTHROUGH] ?: false,
                 lastUpdateCheckMillis = prefs[Keys.LAST_UPDATE_CHECK_MILLIS] ?: 0L,
+                cachedReleaseEtag = prefs[Keys.CACHED_RELEASE_ETAG].orEmpty(),
+                cachedReleaseJson = prefs[Keys.CACHED_RELEASE_JSON].orEmpty(),
                 lastUsedSplitMode = prefs[Keys.LAST_USED_SPLIT_MODE] ?: "equal",
                 widgetSnapshot = WidgetSnapshot(
                     tripId = prefs[Keys.WIDGET_TRIP_ID].orEmpty(),
@@ -145,6 +151,21 @@ class AppPreferencesRepository(context: Context) {
 
     suspend fun setLastUpdateCheckMillis(millis: Long) {
         dataStore.edit { it[Keys.LAST_UPDATE_CHECK_MILLIS] = millis }
+    }
+
+    suspend fun saveReleaseCache(etag: String, rawJson: String, checkedAtMillis: Long) {
+        dataStore.edit { prefs ->
+            prefs[Keys.CACHED_RELEASE_ETAG] = etag
+            prefs[Keys.CACHED_RELEASE_JSON] = rawJson
+            prefs[Keys.LAST_UPDATE_CHECK_MILLIS] = checkedAtMillis
+        }
+    }
+
+    suspend fun clearReleaseCache() {
+        dataStore.edit { prefs ->
+            prefs.remove(Keys.CACHED_RELEASE_ETAG)
+            prefs.remove(Keys.CACHED_RELEASE_JSON)
+        }
     }
 
     suspend fun setLastUsedSplitMode(wireValue: String) {
