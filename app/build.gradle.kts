@@ -16,8 +16,11 @@ android {
     applicationId = "com.isuh.billi"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    // GitHub Actions supplies a unique version code for each automated release.
+    // Local builds fall back to versionCode 1.
+    val releaseVersionCode = providers.environmentVariable("VERSION_CODE").orElse("1").get().toInt()
+    versionCode = releaseVersionCode
+    versionName = "1.0.$releaseVersionCode"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
