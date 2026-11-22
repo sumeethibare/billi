@@ -1,9 +1,13 @@
 package com.example
 
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Color as AndroidColor
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
@@ -11,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -20,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.credentials.CredentialManager
@@ -43,12 +49,16 @@ import com.example.data.firebase.signOutUser
 import com.example.data.model.SplitMode
 import com.example.data.preferences.AppPreferences
 import com.example.data.preferences.AppPreferencesRepository
+import com.example.data.preferences.AppThemeMode
 import com.example.domain.AppUpdateDownloadState
 import com.example.domain.GitHubReleaseInfo
 import com.example.domain.GitHubReleaseUpdater
 import com.example.domain.ShareIntentParser
 import com.example.domain.SharedExpenseDraft
 import com.example.ui.components.BilliMotion
+import com.example.ui.components.BilliToastController
+import com.example.ui.components.BilliTopToastHost
+import com.example.ui.components.LocalBilliToastController
 import com.example.ui.components.ProvideBilliFeedback
 import com.example.ui.components.SignInAvatarMorphOverlay
 import com.example.ui.components.UpdateBottomSheet
@@ -84,15 +94,38 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Configure Firebase App Check BEFORE any Firebase AI / Firestore SDK or UI initialization
         configureAppCheck(this, intent)
-        enableEdgeToEdge()
+
+        val prefsRepo = AppPreferencesRepository(applicationContext)
+        val initialPrefs = prefsRepo.readStartupPreferencesSync()
+        val systemIsDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        val initialUseDark = when (initialPrefs.themeMode) {
+            AppThemeMode.SYSTEM -> systemIsDark
+            AppThemeMode.LIGHT -> false
+            AppThemeMode.DARK -> true
+        }
+        val initialBgColor = when {
+            !initialUseDark -> 0xFFFAF8F4.toInt()
+            initialPrefs.amoledDark -> 0xFF000000.toInt()
+            else -> 0xFF111513.toInt()
+        }
+        window.setBackgroundDrawable(ColorDrawable(initialBgColor))
+
+        val barStyle = if (initialUseDark) {
+            SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+        } else {
+            SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+        }
+        enableEdgeToEdge(statusBarStyle = barStyle, navigationBarStyle = barStyle)
         incomingIntentFlow.value = intent
 
         setContent {
-            val prefsRepo = remember { AppPreferencesRepository(applicationContext) }
             val prefs by prefsRepo.preferencesFlow.collectAsStateWithLifecycle(
-                initialValue = AppPreferences()
+                initialValue = initialPrefs
             )
             val incomingIntent by incomingIntentFlow.collectAsStateWithLifecycle()
+            val toastScope = rememberCoroutineScope()
+            val toastController = remember(toastScope) { BilliToastController(toastScope) }
 
             ProvideBilliFeedback(
                 hapticsEnabled = prefs.hapticsEnabled,
@@ -104,12 +137,22 @@ class MainActivity : ComponentActivity() {
                     useSystemFont = prefs.useSystemFont,
                     reduceMotion = prefs.reduceMotion
                 ) {
-                    BilliAppRoot(
-                        preferencesRepository = prefsRepo,
-                        prefs = prefs,
-                        incomingIntent = incomingIntent,
-                        onConsumeIntent = { incomingIntentFlow.value = null }
-                    )
+                    CompositionLocalProvider(
+                        LocalBilliToastController provides toastController
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            BilliAppRoot(
+                                preferencesRepository = prefsRepo,
+                                prefs = prefs,
+                                incomingIntent = incomingIntent,
+                                onConsumeIntent = { incomingIntentFlow.value = null }
+                            )
+                            BilliTopToastHost(
+                                controller = toastController,
+                                modifier = Modifier.align(Alignment.TopCenter)
+                            )
+                        }
+                    }
                 }
             }
         }

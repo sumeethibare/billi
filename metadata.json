@@ -1,6 +1,6 @@
 {
   "name": "Billi",
-  "description": "Group trip expense and receipt ledger with flexible splits, Creator Lock, QR cloud sync, debt simplification, offline queuing, and archival PDF export.",
+  "description": "Group trip expense and receipt ledger with flexible splits, debt simplification, offline queuing, and archival PDF export.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

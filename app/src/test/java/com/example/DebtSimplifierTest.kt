@@ -470,4 +470,28 @@ class DebtSimplifierTest {
         assertEquals(150_000L, overallNet)
         assertEquals("3 nights with breakfast", bill1.notes)
     }
+
+    @Test
+    fun billiToastController_infersExpectedSemanticTones() {
+        assertEquals(
+            com.example.ui.components.BilliToastTone.SUCCESS,
+            com.example.ui.components.BilliToastController.inferToastTone("Expense added")
+        )
+        assertEquals(
+            com.example.ui.components.BilliToastTone.SUCCESS,
+            com.example.ui.components.BilliToastController.inferToastTone("Settlement recorded")
+        )
+        assertEquals(
+            com.example.ui.components.BilliToastTone.WARNING,
+            com.example.ui.components.BilliToastController.inferToastTone("Deleted \"Goa Dinner\"")
+        )
+        assertEquals(
+            com.example.ui.components.BilliToastTone.ERROR,
+            com.example.ui.components.BilliToastController.inferToastTone("Failed to save expense")
+        )
+        assertEquals(
+            com.example.ui.components.BilliToastTone.INFO,
+            com.example.ui.components.BilliToastController.inferToastTone("Online — trips up to date")
+        )
+    }
 }

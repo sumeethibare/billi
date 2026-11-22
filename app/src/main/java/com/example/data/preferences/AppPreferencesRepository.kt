@@ -13,11 +13,14 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import java.io.IOException
 
 private val Context.billiPreferencesDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "billi_app_preferences"
 )
+
+private const val STARTUP_THEME_CACHE_PREFS = "billi_startup_theme_cache"
 
 enum class AppThemeMode(val wireValue: String, val label: String) {
     SYSTEM("system", "System"),
@@ -57,7 +60,12 @@ data class AppPreferences(
 
 class AppPreferencesRepository(context: Context) {
 
-    private val dataStore = context.applicationContext.billiPreferencesDataStore
+    private val appContext = context.applicationContext
+    private val dataStore = appContext.billiPreferencesDataStore
+    private val startupMirror = appContext.getSharedPreferences(
+        STARTUP_THEME_CACHE_PREFS,
+        Context.MODE_PRIVATE
+    )
 
     private object Keys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
@@ -80,6 +88,48 @@ class AppPreferencesRepository(context: Context) {
         val WIDGET_BALANCE_AMOUNT = stringPreferencesKey("widget_balance_amount")
         val WIDGET_NET_CENTS = longPreferencesKey("widget_net_cents")
         val WIDGET_PENDING_SYNC = intPreferencesKey("widget_pending_sync")
+    }
+
+    /**
+     * Reads cached visual & feedback preferences synchronously (<1ms) so cold starts render
+     * the exact saved theme, AMOLED black mode, font, and motion settings on frame 0 with zero
+     * light-to-dark flash while DataStore loads asynchronously.
+     */
+    fun readStartupPreferencesSync(): AppPreferences {
+        return AppPreferences(
+            themeMode = AppThemeMode.fromWire(startupMirror.getString("theme_mode", null)),
+            amoledDark = startupMirror.getBoolean("amoled_dark", false),
+            useSystemFont = startupMirror.getBoolean("use_system_font", false),
+            reduceMotion = startupMirror.getBoolean("reduce_motion", false),
+            hapticsEnabled = startupMirror.getBoolean("haptics_enabled", true),
+            soundEffectsEnabled = startupMirror.getBoolean("sound_effects_enabled", false)
+        )
+    }
+
+    private fun mirrorStartupVisualPrefs(prefs: AppPreferences) {
+        val existingMode = startupMirror.getString("theme_mode", null)
+        val existingAmoled = startupMirror.getBoolean("amoled_dark", false)
+        val existingFont = startupMirror.getBoolean("use_system_font", false)
+        val existingMotion = startupMirror.getBoolean("reduce_motion", false)
+        val existingHaptics = startupMirror.getBoolean("haptics_enabled", true)
+        val existingSound = startupMirror.getBoolean("sound_effects_enabled", false)
+        if (existingMode == prefs.themeMode.wireValue &&
+            existingAmoled == prefs.amoledDark &&
+            existingFont == prefs.useSystemFont &&
+            existingMotion == prefs.reduceMotion &&
+            existingHaptics == prefs.hapticsEnabled &&
+            existingSound == prefs.soundEffectsEnabled
+        ) {
+            return
+        }
+        startupMirror.edit()
+            .putString("theme_mode", prefs.themeMode.wireValue)
+            .putBoolean("amoled_dark", prefs.amoledDark)
+            .putBoolean("use_system_font", prefs.useSystemFont)
+            .putBoolean("reduce_motion", prefs.reduceMotion)
+            .putBoolean("haptics_enabled", prefs.hapticsEnabled)
+            .putBoolean("sound_effects_enabled", prefs.soundEffectsEnabled)
+            .apply()
     }
 
     val preferencesFlow: Flow<AppPreferences> = dataStore.data
@@ -114,30 +164,37 @@ class AppPreferencesRepository(context: Context) {
                 )
             )
         }
+        .onEach { mirrorStartupVisualPrefs(it) }
 
     suspend fun currentPreferences(): AppPreferences = preferencesFlow.first()
 
     suspend fun setThemeMode(mode: AppThemeMode) {
+        startupMirror.edit().putString("theme_mode", mode.wireValue).apply()
         dataStore.edit { it[Keys.THEME_MODE] = mode.wireValue }
     }
 
     suspend fun setAmoledDark(enabled: Boolean) {
+        startupMirror.edit().putBoolean("amoled_dark", enabled).apply()
         dataStore.edit { it[Keys.AMOLED_DARK] = enabled }
     }
 
     suspend fun setUseSystemFont(useSystem: Boolean) {
+        startupMirror.edit().putBoolean("use_system_font", useSystem).apply()
         dataStore.edit { it[Keys.USE_SYSTEM_FONT] = useSystem }
     }
 
     suspend fun setReduceMotion(reduce: Boolean) {
+        startupMirror.edit().putBoolean("reduce_motion", reduce).apply()
         dataStore.edit { it[Keys.REDUCE_MOTION] = reduce }
     }
 
     suspend fun setHapticsEnabled(enabled: Boolean) {
+        startupMirror.edit().putBoolean("haptics_enabled", enabled).apply()
         dataStore.edit { it[Keys.HAPTICS_ENABLED] = enabled }
     }
 
     suspend fun setSoundEffectsEnabled(enabled: Boolean) {
+        startupMirror.edit().putBoolean("sound_effects_enabled", enabled).apply()
         dataStore.edit { it[Keys.SOUND_EFFECTS_ENABLED] = enabled }
     }
 

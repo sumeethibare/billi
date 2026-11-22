@@ -927,12 +927,7 @@ class ExpenseViewModel(
                         it.copy(validationError = firstError?.localizedMessage ?: "Unable to save daily bills")
                     }
                 } else {
-                    val msg = if (isOnline) {
-                        "Added ${state.multiDayCount} daily bills & synced"
-                    } else {
-                        "Saved ${state.multiDayCount} daily bills offline — queued for sync"
-                    }
-                    onSaved(lastSavedId, msg)
+                    onSaved(lastSavedId, "Added ${state.multiDayCount} daily bills")
                 }
                 return@launch
             }
@@ -958,11 +953,7 @@ class ExpenseViewModel(
             )
             _uiState.update { it.copy(saving = false) }
             result.onSuccess { billId ->
-                val msg = when {
-                    !isOnline -> "Saved offline — queued for background sync"
-                    state.isEditing -> "Expense updated & synced"
-                    else -> "Expense added & synced"
-                }
+                val msg = if (state.isEditing) "Expense updated" else "Expense added"
                 onSaved(billId, msg)
             }.onFailure { err ->
                 _uiState.update {
@@ -983,10 +974,7 @@ class ExpenseViewModel(
             val result = repository.softDeleteBill(trip, target, isOnline)
             _uiState.update { it.copy(deleting = false) }
             result.onSuccess {
-                onDeleted(
-                    target,
-                    if (isOnline) "Moved to Deleted Bills" else "Move to trash queued for sync"
-                )
+                onDeleted(target, "Moved to Deleted Bills")
             }.onFailure { err ->
                 _uiState.update {
                     it.copy(validationError = err.localizedMessage ?: "Failed to delete expense")

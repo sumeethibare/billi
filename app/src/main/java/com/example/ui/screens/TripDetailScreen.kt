@@ -85,10 +85,6 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -141,7 +137,9 @@ import com.example.service.TripBubbleService
 import com.example.ui.components.BillCollaborationSection
 import com.example.ui.components.BilliMorphCard
 import com.example.ui.components.BilliPredictiveOverlay
+import com.example.ui.components.BilliToastTone
 import com.example.ui.components.LocalBilliFeedback
+import com.example.ui.components.LocalBilliToastController
 import com.example.ui.components.LocalReduceMotion
 import com.example.ui.components.ReceiptGallerySheet
 import com.example.ui.components.ReceiptZoomViewerOverlay
@@ -182,9 +180,9 @@ fun TripDetailScreen(
 ) {
     val context = LocalContext.current
     val feedback = LocalBilliFeedback.current
+    val toastController = LocalBilliToastController.current
     val reduceMotion = LocalReduceMotion.current
     val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
 
     val detailState by viewModel.detailState.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
@@ -226,8 +224,9 @@ fun TripDetailScreen(
                         false
                     }
                 }
-                snackbarHostState.showSnackbar(
-                    if (saved) "Archival PDF saved to device" else "Could not save PDF"
+                toastController?.show(
+                    message = if (saved) "Archival PDF saved to device" else "Could not save PDF",
+                    tone = if (saved) BilliToastTone.SUCCESS else BilliToastTone.ERROR
                 )
             }
         }
@@ -235,7 +234,7 @@ fun TripDetailScreen(
 
     LaunchedEffect(viewModel) {
         viewModel.toastEvents.collect { msg ->
-            snackbarHostState.showSnackbar(msg)
+            toastController?.show(msg)
         }
     }
 
@@ -264,17 +263,13 @@ fun TripDetailScreen(
         }
     }
 
-    fun showUndoDeletedBillSnackbar(trip: Trip, deletedBill: Bill) {
-        scope.launch {
-            val result = snackbarHostState.showSnackbar(
-                message = "Deleted \"${deletedBill.title}\"",
-                actionLabel = "Undo",
-                duration = SnackbarDuration.Short
-            )
-            if (result == SnackbarResult.ActionPerformed) {
-                feedback?.celebrateDoublePulse()
-                viewModel.restoreBill(trip, deletedBill)
-            }
+    fun showUndoDeletedBillToast(trip: Trip, deletedBill: Bill) {
+        toastController?.show(
+            message = "Deleted \"${deletedBill.title}\"",
+            tone = BilliToastTone.WARNING,
+            actionLabel = "Undo"
+        ) {
+            viewModel.restoreBill(trip, deletedBill)
         }
     }
 
@@ -292,7 +287,6 @@ fun TripDetailScreen(
             Scaffold(
                 contentWindowInsets = WindowInsets.safeDrawing,
                 containerColor = MaterialTheme.colorScheme.background,
-                snackbarHost = { SnackbarHost(snackbarHostState) },
                 topBar = {
                     TopAppBar(
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -349,9 +343,10 @@ fun TripDetailScreen(
                                 onClick = {
                                     feedback?.tick()
                                     if (!TripBubbleService.canDrawOverlay(context)) {
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("Enable \"Display over other apps\" to pin the ₹+ Trip Bubble.")
-                                        }
+                                        toastController?.show(
+                                            message = "Enable \"Display over other apps\" to pin the ₹+ Trip Bubble.",
+                                            tone = BilliToastTone.WARNING
+                                        )
                                         runCatching {
                                             context.startActivity(TripBubbleService.overlaySettingsIntent(context))
                                         }
@@ -362,9 +357,10 @@ fun TripDetailScreen(
                                             currentContent.trip.title
                                         )
                                         feedback?.celebrateDoublePulse()
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("Floating Trip Bubble pinned for ${currentContent.trip.title}")
-                                        }
+                                        toastController?.show(
+                                            message = "Floating Trip Bubble pinned for ${currentContent.trip.title}",
+                                            tone = BilliToastTone.SUCCESS
+                                        )
                                     }
                                 },
                                 modifier = Modifier.testTag("trip_bubble_pin_button")
@@ -381,15 +377,13 @@ fun TripDetailScreen(
                             syncStatus = syncStatus,
                             onClick = {
                                 feedback?.tick()
-                                scope.launch {
-                                    val msg = when (syncStatus.state) {
-                                        SyncConnectionState.ONLINE_SYNCED -> "Online — trip ledger synced"
-                                        SyncConnectionState.SYNCING -> "Syncing ${syncStatus.pendingWritesCount} queued changes…"
-                                        SyncConnectionState.OFFLINE_QUEUED -> "Offline — ${syncStatus.pendingWritesCount} edits queued for background sync"
-                                        SyncConnectionState.OFFLINE_SYNCED -> "Offline — browsing locally cached trip"
-                                    }
-                                    snackbarHostState.showSnackbar(msg)
+                                val msg = when (syncStatus.state) {
+                                    SyncConnectionState.ONLINE_SYNCED -> "Online — trip ledger up to date"
+                                    SyncConnectionState.SYNCING -> "Syncing ${syncStatus.pendingWritesCount} updates…"
+                                    SyncConnectionState.OFFLINE_QUEUED -> "Offline — ${syncStatus.pendingWritesCount} pending updates"
+                                    SyncConnectionState.OFFLINE_SYNCED -> "Offline — viewing cached trip"
                                 }
+                                toastController?.show(msg, BilliToastTone.INFO)
                             },
                             modifier = Modifier.padding(end = 10.dp)
                         )
@@ -546,7 +540,7 @@ fun TripDetailScreen(
                                             onDeleteBill = { bill ->
                                                 feedback?.warningNudge()
                                                 viewModel.softDeleteBill(content.trip, bill) { deleted ->
-                                                    showUndoDeletedBillSnackbar(content.trip, deleted)
+                                                    showUndoDeletedBillToast(content.trip, deleted)
                                                 }
                                             }
                                         )
@@ -584,7 +578,7 @@ fun TripDetailScreen(
                                                 viewModel.toggleCoHost(content.trip, uid, name)
                                             },
                                             onRequestOwnershipTransfer = { user -> transferringToUser = user },
-                                            onCopiedMessage = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
+                                            onCopiedMessage = { msg -> toastController?.show(msg, BilliToastTone.SUCCESS) }
                                         )
                                     }
                                 }
@@ -635,7 +629,7 @@ fun TripDetailScreen(
                         showAddBillEditor = false
                         editingBill = null
                         activeSharedDraft = null
-                        showUndoDeletedBillSnackbar(currentContent.trip, deletedBill)
+                        showUndoDeletedBillToast(currentContent.trip, deletedBill)
                     },
                     onDismiss = {
                         showAddBillEditor = false
@@ -980,7 +974,7 @@ fun TripDetailScreen(
                 onDelete = {
                     inspectingBill = null
                     viewModel.softDeleteBill(trip, bill) { deleted ->
-                        showUndoDeletedBillSnackbar(trip, deleted)
+                        showUndoDeletedBillToast(trip, deleted)
                     }
                 },
                 onToggleReaction = { type, removeExisting ->

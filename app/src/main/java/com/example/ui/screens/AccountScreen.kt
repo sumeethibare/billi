@@ -61,8 +61,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -94,7 +92,9 @@ import com.example.domain.GitHubReleaseUpdater
 import com.example.service.TripBubbleService
 import com.example.ui.components.BilliMorphCard
 import com.example.ui.components.BilliStaggeredItem
+import com.example.ui.components.BilliToastTone
 import com.example.ui.components.LocalBilliFeedback
+import com.example.ui.components.LocalBilliToastController
 import com.example.ui.components.UpdateBottomSheet
 import com.example.ui.components.billiPressScale
 import com.example.ui.theme.MoneyTitleStyle
@@ -114,8 +114,8 @@ fun AccountScreen(
 ) {
     val context = LocalContext.current
     val feedback = LocalBilliFeedback.current
+    val toastController = LocalBilliToastController.current
     val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
 
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
     val cachedAvailableUpdate by viewModel.cachedAvailableUpdate.collectAsStateWithLifecycle()
@@ -128,7 +128,7 @@ fun AccountScreen(
 
     LaunchedEffect(updateStatusMessage) {
         updateStatusMessage?.let { msg ->
-            snackbarHostState.showSnackbar(msg)
+            toastController?.show(msg)
             viewModel.clearStatusMessage()
         }
     }
@@ -140,7 +140,6 @@ fun AccountScreen(
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -429,24 +428,28 @@ fun AccountScreen(
                                             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                                         }
                                         if (!TripBubbleService.canDrawOverlay(context)) {
-                                            scope.launch {
-                                                snackbarHostState.showSnackbar(
-                                                    "Grant \"Display over other apps\" for Billi, then toggle Trip Bubble on."
-                                                )
-                                            }
+                                            toastController?.show(
+                                                message = "Grant \"Display over other apps\" for Billi, then toggle Trip Bubble on.",
+                                                tone = BilliToastTone.WARNING
+                                            )
                                             runCatching {
                                                 context.startActivity(TripBubbleService.overlaySettingsIntent(context))
                                             }
                                         } else {
                                             val snap = prefs.widgetSnapshot
                                             if (snap.tripId.isBlank()) {
-                                                scope.launch {
-                                                    snackbarHostState.showSnackbar("Open any active trip first to pin its Trip Bubble.")
-                                                }
+                                                toastController?.show(
+                                                    message = "Open any active trip first to pin its Trip Bubble.",
+                                                    tone = BilliToastTone.INFO
+                                                )
                                             } else {
                                                 viewModel.setTripBubbleEnabled(true)
                                                 TripBubbleService.start(context, snap.tripId, snap.tripTitle)
                                                 feedback?.celebrateDoublePulse()
+                                                toastController?.show(
+                                                    message = "Trip Bubble enabled for ${snap.tripTitle}",
+                                                    tone = BilliToastTone.SUCCESS
+                                                )
                                             }
                                         }
                                     } else {

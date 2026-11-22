@@ -204,7 +204,6 @@ class TripDetailViewModel(
         )
 
     init {
-        observeSyncEvents()
         registerCurrentSyncedUser()
         syncWidgetSnapshotLoop()
     }
@@ -250,24 +249,6 @@ class TripDetailViewModel(
                 linkedMemberId = null,
                 isOnline = syncMonitor.isCurrentlyOnline()
             )
-        }
-    }
-
-    private fun observeSyncEvents() {
-        viewModelScope.launch {
-            var previousOnline: Boolean? = null
-            var hadPending = false
-            syncStatus.collect { status ->
-                if (previousOnline == true && !status.isOnline) {
-                    _toastEvents.tryEmit("Offline mode — edits will queue for background sync")
-                } else if (previousOnline == false && status.isOnline) {
-                    _toastEvents.tryEmit("Back online — trip ledger synced")
-                } else if (status.isOnline && hadPending && status.pendingWritesCount == 0) {
-                    _toastEvents.tryEmit("Queued offline updates synced to cloud")
-                }
-                previousOnline = status.isOnline
-                hadPending = status.pendingWritesCount > 0
-            }
         }
     }
 
@@ -408,9 +389,7 @@ class TripDetailViewModel(
             _busy.value = false
             result.onSuccess {
                 _receiptCache.value = _receiptCache.value - bill.id
-                _toastEvents.tryEmit(
-                    if (isOnline) "Bill permanently removed" else "Permanent delete queued for sync"
-                )
+                _toastEvents.tryEmit("Bill permanently removed")
             }.onFailure { err ->
                 _toastEvents.tryEmit(err.localizedMessage ?: "Failed to permanently delete bill")
             }
@@ -438,9 +417,7 @@ class TripDetailViewModel(
             )
             _busy.value = false
             result.onSuccess {
-                _toastEvents.tryEmit(
-                    if (isOnline) "Settlement recorded & balances updated" else "Settlement queued for sync"
-                )
+                _toastEvents.tryEmit("Settlement recorded")
                 onDone()
             }.onFailure { err ->
                 _toastEvents.tryEmit(err.localizedMessage ?: "Failed to record settlement")
@@ -537,9 +514,7 @@ class TripDetailViewModel(
             val result = repository.addTripMember(trip, name, isOnline)
             _busy.value = false
             result.onSuccess {
-                _toastEvents.tryEmit(
-                    if (isOnline) "Added $name to trip" else "Added $name offline — queued for sync"
-                )
+                _toastEvents.tryEmit("Added $name to trip")
                 onDone()
             }.onFailure { err ->
                 _toastEvents.tryEmit(err.localizedMessage ?: "Could not add member")

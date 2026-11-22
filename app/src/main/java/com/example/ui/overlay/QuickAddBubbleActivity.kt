@@ -83,15 +83,17 @@ class QuickAddBubbleActivity : ComponentActivity() {
 
         val passedTripId = intent.getStringExtra(EXTRA_TRIP_ID).orEmpty()
         val passedTripTitle = intent.getStringExtra(EXTRA_TRIP_TITLE).orEmpty()
+        val prefsRepo = AppPreferencesRepository(applicationContext)
+        val initialPrefs = prefsRepo.readStartupPreferencesSync()
 
         setContent {
-            val prefsRepo = remember { AppPreferencesRepository(applicationContext) }
-            val prefs by prefsRepo.preferencesFlow.collectAsStateWithLifecycle(initialValue = AppPreferences())
+            val prefs by prefsRepo.preferencesFlow.collectAsStateWithLifecycle(initialValue = initialPrefs)
             BilliTheme(
                 themeMode = prefs.themeMode,
                 amoledDark = prefs.amoledDark,
                 useSystemFont = prefs.useSystemFont,
-                reduceMotion = prefs.reduceMotion
+                reduceMotion = prefs.reduceMotion,
+                syncWindowBackground = false
             ) {
                 QuickAddOverlaySheet(
                     tripIdHint = passedTripId.ifBlank { prefs.widgetSnapshot.tripId },
@@ -326,10 +328,7 @@ private fun QuickAddOverlaySheet(
                                     )
                                     saving = false
                                     result.onSuccess {
-                                        onSaved(
-                                            if (isOnline) "Logged ${title.trim()} (${CurrencyFormatter.format(cents)})"
-                                            else "Saved offline — queued for sync"
-                                        )
+                                        onSaved("Logged ${title.trim()} (${CurrencyFormatter.format(cents)})")
                                     }.onFailure { err ->
                                         errorMsg = err.localizedMessage ?: "Unable to save"
                                     }

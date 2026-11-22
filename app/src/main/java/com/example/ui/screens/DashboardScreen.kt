@@ -63,8 +63,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -110,8 +108,10 @@ import com.example.domain.CurrencyFormatter
 import com.example.domain.SharedExpenseDraft
 import com.example.ui.components.BilliMorphCard
 import com.example.ui.components.BilliPredictiveOverlay
+import com.example.ui.components.BilliToastTone
 import com.example.ui.components.DashboardSkeleton
 import com.example.ui.components.LocalBilliFeedback
+import com.example.ui.components.LocalBilliToastController
 import com.example.ui.components.LocalReduceMotion
 import com.example.ui.components.QrScannerScreen
 import com.example.ui.components.RoleLockBadge
@@ -145,15 +145,13 @@ fun DashboardScreen(
 ) {
     val context = LocalContext.current
     val feedback = LocalBilliFeedback.current
+    val toastController = LocalBilliToastController.current
     val reduceMotion = LocalReduceMotion.current
     val tripsState by viewModel.tripsState.collectAsStateWithLifecycle()
     val overviewMetrics by viewModel.overviewMetrics.collectAsStateWithLifecycle()
     val filterState by viewModel.filterState.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val actionBusy by viewModel.actionBusy.collectAsStateWithLifecycle()
-
-    val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
 
     var showCreateTripDialog by remember { mutableStateOf(false) }
     var showQrScanner by remember { mutableStateOf(false) }
@@ -178,7 +176,7 @@ fun DashboardScreen(
 
     LaunchedEffect(viewModel) {
         viewModel.syncEvents.collect { msg ->
-            snackbarHostState.showSnackbar(msg)
+            toastController?.show(msg)
         }
     }
 
@@ -194,7 +192,6 @@ fun DashboardScreen(
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
             containerColor = MaterialTheme.colorScheme.background,
-            snackbarHost = { SnackbarHost(snackbarHostState) },
             modifier = Modifier
                 .fillMaxSize()
                 .then(if (blurRadius > 0.dp) Modifier.blur(blurRadius) else Modifier)
@@ -224,15 +221,13 @@ fun DashboardScreen(
                             syncStatus = syncStatus,
                             onClick = {
                                 feedback?.tick()
-                                scope.launch {
-                                    val msg = when (syncStatus.state) {
-                                        SyncConnectionState.ONLINE_SYNCED -> "Online — all trips synced with cloud"
-                                        SyncConnectionState.SYNCING -> "Syncing ${syncStatus.pendingWritesCount} queued updates…"
-                                        SyncConnectionState.OFFLINE_QUEUED -> "Offline — ${syncStatus.pendingWritesCount} changes queued for background sync"
-                                        SyncConnectionState.OFFLINE_SYNCED -> "Offline — viewing locally cached trips"
-                                    }
-                                    snackbarHostState.showSnackbar(msg)
+                                val msg = when (syncStatus.state) {
+                                    SyncConnectionState.ONLINE_SYNCED -> "Online — trips up to date"
+                                    SyncConnectionState.SYNCING -> "Syncing ${syncStatus.pendingWritesCount} updates…"
+                                    SyncConnectionState.OFFLINE_QUEUED -> "Offline — ${syncStatus.pendingWritesCount} pending updates"
+                                    SyncConnectionState.OFFLINE_SYNCED -> "Offline — viewing cached trips"
                                 }
+                                toastController?.show(msg, BilliToastTone.INFO)
                             }
                         )
                         IconButton(
@@ -805,7 +800,7 @@ fun DashboardScreen(
                         onOpenTrip(tripId, tripTitle)
                     },
                     onError = { msg ->
-                        scope.launch { snackbarHostState.showSnackbar(msg) }
+                        toastController?.show(msg, BilliToastTone.ERROR)
                     }
                 )
             }

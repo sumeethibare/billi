@@ -163,7 +163,6 @@ class DashboardViewModel(
     )
 
     init {
-        observeSyncTransitions()
         viewModelScope.launch {
             repository.ensureUserProfile(
                 displayName = currentUserName,
@@ -191,24 +190,6 @@ class DashboardViewModel(
         _filterState.value = DashboardFilterState()
     }
 
-    private fun observeSyncTransitions() {
-        viewModelScope.launch {
-            var previousOnline: Boolean? = null
-            var hadPendingWrites = false
-            syncStatus.collect { status ->
-                if (previousOnline == true && !status.isOnline) {
-                    _syncEvents.tryEmit("You're offline — changes will queue for background sync")
-                } else if (previousOnline == false && status.isOnline) {
-                    _syncEvents.tryEmit("Back online — syncing trip ledgers")
-                } else if (status.isOnline && hadPendingWrites && status.pendingWritesCount == 0) {
-                    _syncEvents.tryEmit("All queued changes synced to cloud")
-                }
-                previousOnline = status.isOnline
-                hadPendingWrites = status.pendingWritesCount > 0
-            }
-        }
-    }
-
     fun createTrip(
         title: String,
         budgetCents: Long,
@@ -228,9 +209,6 @@ class DashboardViewModel(
             )
             _actionBusy.value = false
             result.onSuccess { tripId ->
-                if (!isOnline) {
-                    _syncEvents.tryEmit("Trip saved offline — queued for background sync")
-                }
                 onSuccess(tripId, title.trim())
             }.onFailure { err ->
                 onError(err.localizedMessage ?: "Failed to create trip")
@@ -257,7 +235,7 @@ class DashboardViewModel(
             val result = repository.joinTripViaQr(invite.tripId, invite.joinCode)
             _actionBusy.value = false
             result.onSuccess { tripId ->
-                _syncEvents.tryEmit("Joined trip — syncing latest ledger from cloud")
+                _syncEvents.tryEmit("Joined trip")
                 onSuccess(tripId)
             }.onFailure { err ->
                 onError(err.localizedMessage ?: "Unable to join trip")

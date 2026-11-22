@@ -1,6 +1,7 @@
 package com.example.ui.theme
 
 import android.app.Activity
+import android.graphics.drawable.ColorDrawable
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
@@ -13,10 +14,14 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -171,6 +176,7 @@ fun BilliTheme(
     amoledDark: Boolean = false,
     useSystemFont: Boolean = false,
     reduceMotion: Boolean = false,
+    syncWindowBackground: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val systemDark = isSystemInDarkTheme()
@@ -185,14 +191,24 @@ fun BilliTheme(
         amoledDark -> BilliAmoledColorScheme
         else -> BilliDarkColorScheme
     }
-    val animatedScheme = targetScheme.animated(reduceMotion)
+    // Snap immediately during cold-start bootstrap so there is zero light-to-dark fade on launch,
+    // then allow smooth 320ms color transitions whenever the user actively switches themes.
+    var allowThemeAnimation by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        allowThemeAnimation = true
+    }
+    val effectiveScheme = targetScheme.animated(reduceMotion || !allowThemeAnimation)
     val typography = remember(useSystemFont) { billiTypography(useSystemFont) }
 
     val view = LocalView.current
     if (!view.isInEditMode) {
+        val windowBgArgb = targetScheme.background.toArgb()
         SideEffect {
             val window = (view.context as? Activity)?.window
             if (window != null) {
+                if (syncWindowBackground) {
+                    window.setBackgroundDrawable(ColorDrawable(windowBgArgb))
+                }
                 val controller = WindowCompat.getInsetsController(window, view)
                 controller.isAppearanceLightStatusBars = !useDark
                 controller.isAppearanceLightNavigationBars = !useDark
@@ -205,7 +221,7 @@ fun BilliTheme(
         LocalReduceMotion provides reduceMotion
     ) {
         MaterialTheme(
-            colorScheme = animatedScheme,
+            colorScheme = effectiveScheme,
             typography = typography,
             shapes = BilliShapes,
             content = content
